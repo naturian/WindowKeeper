@@ -127,18 +127,10 @@ internal sealed class MerkerKontext : ApplicationContext
                 };
             }
 
-            var wp = Win32.WINDOWPLACEMENT.Neu();
-            if (!Win32.GetWindowPlacement(hwnd, ref wp))
-                return;
-            wp.rcNormalPosition = new Win32.RECT
-            {
-                Left = ziel.X,
-                Top = ziel.Y,
-                Right = ziel.X + ziel.Breite,
-                Bottom = ziel.Y + ziel.Hoehe,
-            };
-            wp.showCmd = Win32.SW_HIDE; // Fenster ist unsichtbar und soll es hier bleiben
-            Win32.SetWindowPlacement(hwnd, ref wp);
+            // SetWindowPos zeigt/versteckt nichts — sicher, selbst wenn das
+            // Fenster zwischen Prüfung und Aufruf sichtbar geworden ist
+            Win32.SetWindowPos(hwnd, IntPtr.Zero, ziel.X, ziel.Y, ziel.Breite, ziel.Hoehe,
+                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
             vorabPositioniert.Add(hwnd);
         }
         catch
@@ -530,7 +522,6 @@ internal static class Win32
     public const uint EVENT_OBJECT_CREATE = 0x8000;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
     public const long WS_CHILD = 0x40000000;
-    public const int SW_HIDE = 0;
 
     public delegate void WinEventDelegate(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit);
 
