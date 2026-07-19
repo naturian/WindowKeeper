@@ -7,23 +7,38 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 10.0.x
 
       - name: Determine version from tag
         id: version
         shell: pwsh
         run: |
           $v = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Tag must be semantic versioned, for example v2.1.0"
+          }
+          [xml]$project = Get-Content WindowKeeper.csproj
+          $projectVersion = $project.Project.PropertyGroup.Version
+          if ($v -ne $projectVersion) {
+            throw "Tag version $v does not match WindowKeeper.csproj version $projectVersion"
+          }
           "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Restore, build and test
+        run: |
+          dotnet restore WindowKeeper.Tests/WindowKeeper.Tests.csproj
+          dotnet test WindowKeeper.Tests/WindowKeeper.Tests.csproj -c Release -warnaserror
 
       - name: Publish (framework-dependent)
         run: dotnet publish -c Release -p:Version=${{ steps.version.outputs.version }} -o publish-fd
@@ -37,14 +52,36 @@ jobs:
           Compress-Archive -Path publish-fd\* -DestinationPath "WindowKeeper-${{ steps.version.outputs.version }}-win-x64.zip"
           Compress-Archive -Path publish-sc\* -DestinationPath "WindowKeeper-${{ steps.version.outputs.version }}-win-x64-selfcontained.zip"
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: WindowKeeper-*.zip
-          generate_release_notes: true
-          body: |
-            **Two downloads:**
-            - `…win-x64.zip` — small, requires the [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
-            - `…win-x64-selfcontained.zip` — larger, runs without any prerequisites
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          .\tools\build-installer.ps1 `
+            -Version '${{ steps.version.outputs.version }}' `
+            -SourceDir '.\publish-sc' `
+            -OutputDir '.'
 
-            Extract anywhere and run `WindowKeeper.exe --install` once (single elevation prompt). `--uninstall` removes it again.
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path 'WindowKeeper-*.zip', 'WindowKeeper-Setup-*.exe' | Sort-Object Name | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)"
+          } | Set-Content SHA256SUMS.txt
+
+      - name: Attest release artifacts
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
+        with:
+          subject-path: |
+            WindowKeeper-*.zip
+            WindowKeeper-Setup-*.exe
+            SHA256SUMS.txt
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME WindowKeeper-*.zip WindowKeeper-Setup-*.exe SHA256SUMS.txt `
+            --verify-tag `
+            --generate-notes `
+            --title "WindowKeeper ${{ steps.version.outputs.version }}"

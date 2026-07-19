@@ -1,6 +1,6 @@
 # WindowKeeper
 
-A small Windows utility (.NET 9, WinForms, no visible window) that
+A small Windows utility (.NET 10 LTS, WinForms, no visible window) that
 remembers where you close your windows — and reopens them right there.
 
 ## Why does this exist?
@@ -41,16 +41,26 @@ plays at the target position instead of the corner.
 
 ## Download & install
 
-Grab the latest zip from the
+Grab the latest release from the
 [releases page](https://github.com/naturian/WindowKeeper/releases):
 
+- `WindowKeeper-Setup-….exe` — **recommended**; self-contained, installs to
+  Program Files, registers WindowKeeper for logon and provides a normal entry
+  under Windows' installed apps.
 - `…win-x64.zip` — small, requires the
-  [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+  [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 - `…win-x64-selfcontained.zip` — larger, runs without any prerequisites
 
-Extract anywhere and run `WindowKeeper.exe --install` once (single
-elevation prompt). `--uninstall` removes it again. Releases are built
-automatically by GitHub Actions on every version tag.
+For the normal installation, run the setup executable and follow the short
+wizard. Updates can be installed directly over an existing version; uninstall
+through Windows' **Installed apps** page.
+
+For portable deployment, extract either zip and run
+`WindowKeeper.exe --install` once. The files are copied to the protected
+`%ProgramFiles%\WindowKeeper` directory before the elevated logon task is
+registered, so the extracted download can be removed afterwards.
+`--uninstall` removes the portable installation again. Releases are built,
+tested, checksummed and supplied with build provenance by GitHub Actions.
 
 ## Usage
 
@@ -67,17 +77,20 @@ startup (restart WindowKeeper after editing):
 
 ```json
 {
+  "Enabled": true,
   "TopLeftThreshold": 350,
   "MinLifetimeMs": 10000,
   "MaxAgeDays": 90,
   "Rules": [
     { "Process": "firefox", "Mode": "ignore" },
     { "Process": "notepad", "Mode": "center" },
-    { "Process": "Code", "IgnoreTitle": true }
+    { "Process": "Code", "IgnoreTitle": true },
+    { "Process": "msedge", "HashTitle": true }
   ]
 }
 ```
 
+- `Enabled` — persists the tray/hotkey toggle across restarts.
 - `TopLeftThreshold` — distance (px) from the top-left corner up to which a
   window counts as a "top-left opener" (centering fallback).
 - `MinLifetimeMs` — windows that close sooner and were never touched are not
@@ -90,6 +103,12 @@ startup (restart WindowKeeper after editing):
   - `"IgnoreTitle": true` — build the position key without the window title;
     useful for apps whose titles change with the open document (browsers,
     editors), so all their windows share one remembered position.
+  - `"HashTitle": true` — keep separate title-based positions without writing
+    document names, folder names or URLs to `positions.json` in plaintext.
+
+Invalid numeric settings are clamped to safe ranges and unknown rule modes
+fall back to `normal`. A malformed JSON file is preserved with a
+`corrupt-<timestamp>` suffix and replaced with valid defaults.
 
 ## How it works
 
@@ -103,7 +122,7 @@ startup (restart WindowKeeper after editing):
   passes take over.
 - Additional checks run after 150 ms and again after 700 ms (MMC sets its
   position late). "Top-left" criterion: distance to the top-left corner of
-  the work area ≤ 350 px (constants in `Program.cs`).
+  the work area ≤ the configured threshold.
 - Positions are tracked via `GetWindowPlacement` (every 4 s) and saved on
   close to `%APPDATA%\WindowKeeper\positions.json`.
   Key: `process|windowClass|title`.
@@ -114,23 +133,42 @@ startup (restart WindowKeeper after editing):
 - Positions are stored **per monitor configuration** (resolution + layout):
   on a display change (`DisplaySettingsChanged`) WindowKeeper automatically
   switches to the matching profile, so different setups do not overwrite
-  each other.
+  each other. Device name, DPI and working area are part of the profile, so a
+  scaling or taskbar-layout change gets its own positions.
+- Writes are atomic and retain one `.bak` file. Unexpected failures are logged
+  with rotation under `%LOCALAPPDATA%\WindowKeeper\Logs`.
+
+### Privacy
+
+By default, the position key includes the visible window title. Depending on
+the application this may contain a document, folder or page name. Use
+`IgnoreTitle` when all windows of a process should share a position, or
+`HashTitle` when separate positions are desired without storing titles in
+plaintext. No data is transmitted anywhere.
 
 ## Building & setup
 
 ```powershell
-dotnet publish -c Release -o publish
-.\publish\WindowKeeper.exe --install
+dotnet publish -c Release -r win-x64 --self-contained `
+  -p:PublishSingleFile=true -o publish-sc
+.\tools\build-installer.ps1 -Version 2.1.0 `
+  -SourceDir .\publish-sc -OutputDir .\installer-output
 ```
 
-`--install` prompts for elevation once and registers the **WindowKeeper**
-scheduled task (run at logon, highest privileges) pointing at the
-executable's own location — the folder can live anywhere. Elevated rights
+The installer build helper downloads the pinned Inno Setup 7.0.2 compiler,
+verifies its SHA-256 hash and Authenticode publisher, and then creates
+`WindowKeeper-Setup-2.1.0.exe`.
+
+`--install` prompts for elevation once, copies the published files to
+`%ProgramFiles%\WindowKeeper`, and registers the **WindowKeeper** scheduled
+task (run at logon, highest privileges) pointing at that protected copy. Elevated rights
 are required because e.g. Device Manager auto-elevates, and Windows (UIPI)
 forbids normal processes from moving windows of elevated ones. Success is
 silent; the appearing tray icon is the feedback.
 
-`--uninstall` stops WindowKeeper and removes the scheduled task.
+`--uninstall` stops WindowKeeper and removes the scheduled task and installed
+files. The setup-based installation should instead be removed through
+Windows' **Installed apps** page.
 
-Requires the .NET 9 Desktop Runtime (the published build is
+Requires the .NET 10 Desktop Runtime (the published build is
 framework-dependent).

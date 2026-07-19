@@ -1,4 +1,11 @@
 bin/
 obj/
 publish/
+publish-*/
+installer-output/
+WindowKeeper-*.zip
+WindowKeeper-Setup-*.exe
+SHA256SUMS.txt
 .claude/
+setup-ergebnis.txt
+TestResults/
