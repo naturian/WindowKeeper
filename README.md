@@ -24,7 +24,11 @@ zu öffnen (z. B. Geräte-Manager und andere MMC-/System-Tools):
 
 - Ein unsichtbares Fenster empfängt über `RegisterShellHookWindow` die
   Shell-Nachrichten `HSHELL_WINDOWCREATED`/`HSHELL_WINDOWDESTROYED`.
-- Neue Fenster werden nach 150 ms und nochmal nach 700 ms geprüft (MMC setzt
+- Beim Erscheinen wird sofort korrigiert: verstecken, positionieren, neu
+  zeigen — so läuft auch die Öffnungsanimation an der Zielposition ab statt
+  oben links. Ist der Titel noch nicht endgültig (MMC), ordnet ein eindeutiger
+  `Prozess|Klasse`-Abgleich zu; bei Mehrdeutigkeit greifen die Nachläufe.
+- Zusätzlich wird nach 150 ms und nochmal nach 700 ms geprüft (MMC setzt
   seine Position verzögert). Kriterium „oben links": Abstand zur linken oberen
   Ecke des Arbeitsbereichs ≤ 350 px (Konstanten in `Program.cs`).
 - Positionen werden per `GetWindowPlacement` verfolgt (alle 4 s) und beim
