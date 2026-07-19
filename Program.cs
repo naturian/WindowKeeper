@@ -54,6 +54,7 @@ internal sealed class MerkerKontext : ApplicationContext
     private readonly Dictionary<string, Platzierung> gespeichert;
     private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
     private readonly HashSet<IntPtr> vorabPositioniert = new();
+    private readonly Dictionary<IntPtr, (Platzierung Ziel, int Rest)> vorabKorrektur = new();
     private bool aktiv = true;
 
     public MerkerKontext()
@@ -61,7 +62,9 @@ internal sealed class MerkerKontext : ApplicationContext
         gespeichert = Laden();
 
         hook = new HookFenster();
-        hook.FensterAngelegt += hwnd => FruehPositionieren(hwnd, 0);
+        hook.FensterAngelegt += FruehPositionieren;
+        hook.FensterGezeigt += hwnd => vorabKorrektur.Remove(hwnd);
+        hook.FensterOrtGeaendert += FensterOrtGeaendert;
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
         hook.FensterBewegt += FensterBewegt;
@@ -82,7 +85,7 @@ internal sealed class MerkerKontext : ApplicationContext
     // unsichtbar ist: Zielposition schon jetzt setzen, damit die
     // Öffnungsanimation dort abläuft statt oben links. Der Titel wird oft
     // erst kurz nach der Erstellung gesetzt, daher kurze Wiederholungen.
-    private void FruehPositionieren(IntPtr hwnd, int versuch)
+    private void FruehPositionieren(IntPtr hwnd)
     {
         if (!aktiv)
             return;
@@ -100,47 +103,71 @@ internal sealed class MerkerKontext : ApplicationContext
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
             if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
                 return;
-            string schluessel = SchluesselFuer(hwnd); // endet bei leerem Titel mit "|"
-            Platzierung ziel;
-            if (schluessel.EndsWith('|'))
+
+            // Der Titel stimmt beim Erstellen oft noch nicht (MMC trägt hier
+            // erst den generischen Titel; der echte kommt beim Anzeigen).
+            // Wenn genau ein gemerkter Eintrag zu Prozess|Klasse passt, ist
+            // die Zuordnung trotzdem eindeutig.
+            string schluessel = SchluesselFuer(hwnd);
+            if (!gespeichert.TryGetValue(schluessel, out var gemerkt))
             {
-                // Titel wird oft erst beim Anzeigen gesetzt (z. B. MMC). Wenn
-                // genau ein gemerkter Eintrag zu Prozess|Klasse passt, ist die
-                // Zuordnung trotzdem eindeutig — sonst kurz auf den Titel warten.
+                string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
                 var passende = gespeichert
-                    .Where(e => e.Key.StartsWith(schluessel, StringComparison.Ordinal))
+                    .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
                     .Take(2).ToList();
-                if (passende.Count != 1 || passende[0].Value.Maximiert || !IstSichtbar(passende[0].Value))
-                {
-                    if (versuch < 8)
-                        Verzoegert(30, () => FruehPositionieren(hwnd, versuch + 1));
-                    return;
-                }
-                ziel = passende[0].Value;
-            }
-            else if (gespeichert.TryGetValue(schluessel, out var p))
-            {
-                if (p.Maximiert || !IstSichtbar(p))
-                    return; // Maximieren übernimmt die normale Prüfung
-                ziel = p;
-            }
-            else
-            {
-                int b = r.Right - r.Left, h = r.Bottom - r.Top;
-                ziel = new Platzierung
-                {
-                    X = arbeit.Left + (arbeit.Width - b) / 2,
-                    Y = arbeit.Top + (arbeit.Height - h) / 2,
-                    Breite = b,
-                    Hoehe = h,
-                };
+                gemerkt = passende.Count == 1 ? passende[0].Value : null;
             }
 
             // SetWindowPos zeigt/versteckt nichts — sicher, selbst wenn das
             // Fenster zwischen Prüfung und Aufruf sichtbar geworden ist
-            Win32.SetWindowPos(hwnd, IntPtr.Zero, ziel.X, ziel.Y, ziel.Breite, ziel.Hoehe,
-                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+            if (gemerkt != null)
+            {
+                if (gemerkt.Maximiert || !IstSichtbar(gemerkt))
+                    return; // Maximieren übernimmt die normale Prüfung
+                Win32.SetWindowPos(hwnd, IntPtr.Zero, gemerkt.X, gemerkt.Y, gemerkt.Breite, gemerkt.Hoehe,
+                    Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+                // Manche Programme (MMC) verschieben ihr Fenster nach dem
+                // Erstellen selbst noch einmal — der Wächter setzt es dann
+                // zurück, solange es unsichtbar ist
+                vorabKorrektur[hwnd] = (gemerkt, 5);
+            }
+            else
+            {
+                // erste Öffnung: nur Position zentrieren, die Größe kennt die App besser
+                int b = r.Right - r.Left, h = r.Bottom - r.Top;
+                Win32.SetWindowPos(hwnd, IntPtr.Zero,
+                    arbeit.Left + (arbeit.Width - b) / 2, arbeit.Top + (arbeit.Height - h) / 2, 0, 0,
+                    Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+            }
             vorabPositioniert.Add(hwnd);
+        }
+        catch
+        {
+        }
+    }
+
+    // Solange ein vorpositioniertes Fenster unsichtbar ist, wird jede
+    // Eigenbewegung der App sofort ans Ziel zurückkorrigiert; mit dem ersten
+    // Anzeigen endet die Überwachung
+    private void FensterOrtGeaendert(IntPtr hwnd)
+    {
+        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag))
+            return;
+        try
+        {
+            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd) || eintrag.Rest <= 0)
+            {
+                vorabKorrektur.Remove(hwnd);
+                return;
+            }
+            if (!Win32.GetWindowRect(hwnd, out var r))
+                return;
+            if (r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
+                return; // steht am Ziel (auch nach unserem eigenen SetWindowPos)
+            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Rest - 1);
+            Win32.SetWindowPos(hwnd, IntPtr.Zero,
+                eintrag.Ziel.X, eintrag.Ziel.Y, eintrag.Ziel.Breite, eintrag.Ziel.Hoehe,
+                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
         }
         catch
         {
@@ -189,6 +216,7 @@ internal sealed class MerkerKontext : ApplicationContext
     private void FensterGeschlossen(IntPtr hwnd)
     {
         vorabPositioniert.Remove(hwnd); // Handles werden wiederverwendet
+        vorabKorrektur.Remove(hwnd);
         if (verfolgt.Remove(hwnd, out var eintrag))
         {
             gespeichert[eintrag.Schluessel] = eintrag.Letzte;
@@ -445,9 +473,13 @@ internal sealed class HookFenster : NativeWindow
     private readonly Win32.WinEventDelegate winEventRueckruf; // Referenz halten, sonst räumt der GC den Delegaten ab
     private readonly IntPtr bewegtHook;
     private readonly IntPtr erstelltHook;
+    private readonly IntPtr gezeigtHook;
+    private readonly IntPtr ortHook;
 
     public event Action<IntPtr> FensterErstellt;
     public event Action<IntPtr> FensterAngelegt;
+    public event Action<IntPtr> FensterGezeigt;
+    public event Action<IntPtr> FensterOrtGeaendert;
     public event Action<IntPtr> FensterZerstoert;
     public event Action<IntPtr> FensterBewegt;
     public event Action HotkeyUmschalten;
@@ -464,8 +496,13 @@ internal sealed class HookFenster : NativeWindow
         bewegtHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
             IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
         // EVENT_OBJECT_CREATE kommt, bevor das Fenster sichtbar wird — nur so
-        // lässt es sich vor der Öffnungsanimation an die Zielposition setzen
+        // lässt es sich vor der Öffnungsanimation an die Zielposition setzen.
+        // SHOW und LOCATIONCHANGE steuern den Vorab-Wächter.
         erstelltHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_CREATE, Win32.EVENT_OBJECT_CREATE,
+            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
+        gezeigtHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_SHOW, Win32.EVENT_OBJECT_SHOW,
+            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
+        ortHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_LOCATIONCHANGE, Win32.EVENT_OBJECT_LOCATIONCHANGE,
             IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
     }
 
@@ -473,14 +510,27 @@ internal sealed class HookFenster : NativeWindow
     {
         if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) // nur OBJID_WINDOW selbst
             return;
-        if (ereignis == Win32.EVENT_OBJECT_CREATE)
-            FensterAngelegt?.Invoke(hwnd);
-        else
-            FensterBewegt?.Invoke(hwnd);
+        switch (ereignis)
+        {
+            case Win32.EVENT_OBJECT_CREATE:
+                FensterAngelegt?.Invoke(hwnd);
+                break;
+            case Win32.EVENT_OBJECT_SHOW:
+                FensterGezeigt?.Invoke(hwnd);
+                break;
+            case Win32.EVENT_OBJECT_LOCATIONCHANGE:
+                FensterOrtGeaendert?.Invoke(hwnd);
+                break;
+            default:
+                FensterBewegt?.Invoke(hwnd);
+                break;
+        }
     }
 
     public void Freigeben()
     {
+        Win32.UnhookWinEvent(ortHook);
+        Win32.UnhookWinEvent(gezeigtHook);
         Win32.UnhookWinEvent(erstelltHook);
         Win32.UnhookWinEvent(bewegtHook);
         Win32.UnregisterHotKey(Handle, 2);
@@ -529,6 +579,8 @@ internal static class Win32
     public const int WPF_RESTORETOMAXIMIZED = 0x2;
     public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
     public const uint EVENT_OBJECT_CREATE = 0x8000;
+    public const uint EVENT_OBJECT_SHOW = 0x8002;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
     public const long WS_CHILD = 0x40000000;
 
