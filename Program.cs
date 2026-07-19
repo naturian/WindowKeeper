@@ -199,9 +199,11 @@ internal static class Installer
         {
             folder.DeleteTask(taskName, 0);
         }
-        catch (COMException ex) when (ex.HResult == unchecked((int)0x80070002))
+        catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002))
         {
             // Deletion is idempotent; a missing task is the desired state.
+            // Note: the dynamic COM binder maps 0x80070002 to
+            // FileNotFoundException, not COMException — filter on HResult only.
         }
     }
 

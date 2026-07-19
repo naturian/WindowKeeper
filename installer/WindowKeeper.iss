@@ -70,17 +70,13 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--unregister-task"; \
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  ExistingExe: String;
 begin
   Result := '';
-  ExistingExe := ExpandConstant('{app}\{#MyAppExeName}');
-  if FileExists(ExistingExe) then
-  begin
-    if (not Exec(ExistingExe, '--unregister-task', '', SW_HIDE,
-      ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
-    begin
-      Result := 'The existing WindowKeeper instance could not be stopped. ' +
-        'Close it manually and retry the installation.';
-    end;
-  end;
+  { Only stop running instances here. Do NOT invoke the previously installed
+    executable: broken versions (2.2.0 returned an error and showed a modal
+    message box when no task existed) would block or abort the update. The
+    fresh --register-task run after the file copy removes stale tasks itself,
+    so nothing else is needed. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im {#MyAppExeName}', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
