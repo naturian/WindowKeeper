@@ -63,7 +63,7 @@ internal sealed class MerkerKontext : ApplicationContext
 
         hook = new HookFenster();
         hook.FensterAngelegt += FruehPositionieren;
-        hook.FensterGezeigt += hwnd => vorabKorrektur.Remove(hwnd);
+        hook.FensterGezeigt += FensterGezeigt;
         hook.FensterOrtGeaendert += FensterOrtGeaendert;
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
@@ -146,6 +146,39 @@ internal sealed class MerkerKontext : ApplicationContext
         }
     }
 
+    // Manche Programme (MMC) verschieben ihr Fenster und zeigen es im selben
+    // Zug an — dieser Wettlauf ist mit asynchronen WinEvents nicht zu gewinnen.
+    // Wird ein vorpositioniertes Fenster an der falschen Stelle sichtbar,
+    // verstecken wir es sofort, setzen es ans Ziel und zeigen es erneut:
+    // die Öffnungsanimation läuft dann am Ziel ab.
+    private void FensterGezeigt(IntPtr hwnd)
+    {
+        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag))
+            return;
+        try
+        {
+            if (!Win32.IsWindow(hwnd) || eintrag.Uebrig <= 0)
+            {
+                vorabKorrektur.Remove(hwnd);
+                return;
+            }
+            if (Win32.GetWindowRect(hwnd, out var r) && r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
+            {
+                vorabKorrektur.Remove(hwnd); // am Ziel sichtbar geworden -> fertig
+                return;
+            }
+            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Uebrig - 1);
+            Win32.ShowWindow(hwnd, Win32.SW_HIDE);
+            Win32.SetWindowPos(hwnd, IntPtr.Zero,
+                eintrag.Ziel.X, eintrag.Ziel.Y, eintrag.Ziel.Breite, eintrag.Ziel.Hoehe,
+                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+            Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+        }
+        catch
+        {
+        }
+    }
+
     // Solange ein vorpositioniertes Fenster unsichtbar ist, wird jede
     // Eigenbewegung der App sofort ans Ziel zurückkorrigiert; mit dem ersten
     // Anzeigen endet die Überwachung
@@ -156,10 +189,7 @@ internal sealed class MerkerKontext : ApplicationContext
         try
         {
             if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd) || eintrag.Uebrig <= 0)
-            {
-                vorabKorrektur.Remove(hwnd);
-                return;
-            }
+                return; // sichtbar -> FensterGezeigt übernimmt bzw. hat übernommen
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             if (r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
@@ -573,6 +603,8 @@ internal static class Win32
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
+    public const int SW_HIDE = 0;
+    public const int SW_SHOW = 5;
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWMINIMIZED = 2;
     public const int SW_SHOWMAXIMIZED = 3;
@@ -620,6 +652,7 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
