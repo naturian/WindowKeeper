@@ -53,6 +53,7 @@ internal sealed class MerkerKontext : ApplicationContext
     private readonly System.Windows.Forms.Timer verfolgungsTimer;
     private readonly Dictionary<string, Platzierung> gespeichert;
     private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
+    private readonly HashSet<IntPtr> vorabPositioniert = new();
     private bool aktiv = true;
 
     public MerkerKontext()
@@ -60,6 +61,7 @@ internal sealed class MerkerKontext : ApplicationContext
         gespeichert = Laden();
 
         hook = new HookFenster();
+        hook.FensterAngelegt += hwnd => FruehPositionieren(hwnd, 0);
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
         hook.FensterBewegt += FensterBewegt;
@@ -75,6 +77,74 @@ internal sealed class MerkerKontext : ApplicationContext
     }
 
     // ---- Reaktion auf neue Fenster -----------------------------------------
+
+    // Wird bei EVENT_OBJECT_CREATE aufgerufen, solange das Fenster noch
+    // unsichtbar ist: Zielposition schon jetzt setzen, damit die
+    // Öffnungsanimation dort abläuft statt oben links. Der Titel wird oft
+    // erst kurz nach der Erstellung gesetzt, daher kurze Wiederholungen.
+    private void FruehPositionieren(IntPtr hwnd, int versuch)
+    {
+        if (!aktiv)
+            return;
+        try
+        {
+            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd))
+                return; // schon sichtbar -> die normale Prüfung übernimmt
+            long stil = Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE).ToInt64();
+            if ((stil & Win32.WS_CHILD) != 0 || (stil & Win32.WS_CAPTION) != Win32.WS_CAPTION)
+                return;
+            if ((Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64() & Win32.WS_EX_TOOLWINDOW) != 0)
+                return;
+            if (!Win32.GetWindowRect(hwnd, out var r))
+                return;
+            var arbeit = Screen.FromHandle(hwnd).WorkingArea;
+            if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
+                return;
+            if (FensterTitel(hwnd).Length == 0)
+            {
+                if (versuch < 8)
+                    Verzoegert(30, () => FruehPositionieren(hwnd, versuch + 1));
+                return;
+            }
+
+            string schluessel = SchluesselFuer(hwnd);
+            Platzierung ziel;
+            if (gespeichert.TryGetValue(schluessel, out var p))
+            {
+                if (p.Maximiert || !IstSichtbar(p))
+                    return; // Maximieren übernimmt die normale Prüfung
+                ziel = p;
+            }
+            else
+            {
+                int b = r.Right - r.Left, h = r.Bottom - r.Top;
+                ziel = new Platzierung
+                {
+                    X = arbeit.Left + (arbeit.Width - b) / 2,
+                    Y = arbeit.Top + (arbeit.Height - h) / 2,
+                    Breite = b,
+                    Hoehe = h,
+                };
+            }
+
+            var wp = Win32.WINDOWPLACEMENT.Neu();
+            if (!Win32.GetWindowPlacement(hwnd, ref wp))
+                return;
+            wp.rcNormalPosition = new Win32.RECT
+            {
+                Left = ziel.X,
+                Top = ziel.Y,
+                Right = ziel.X + ziel.Breite,
+                Bottom = ziel.Y + ziel.Hoehe,
+            };
+            wp.showCmd = Win32.SW_HIDE; // Fenster ist unsichtbar und soll es hier bleiben
+            Win32.SetWindowPlacement(hwnd, ref wp);
+            vorabPositioniert.Add(hwnd);
+        }
+        catch
+        {
+        }
+    }
 
     private void NeuesFenster(IntPtr hwnd)
     {
@@ -97,7 +167,10 @@ internal sealed class MerkerKontext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
+            // vorab positionierte Fenster stehen schon am Ziel, brauchen aber
+            // trotzdem die Verfolgung; alle anderen nur, wenn sie oben links öffnen
+            if (!vorabPositioniert.Contains(hwnd)
+                && (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle))
                 return; // öffnet nicht oben links -> in Ruhe lassen
 
             string schluessel = SchluesselFuer(hwnd);
@@ -114,6 +187,7 @@ internal sealed class MerkerKontext : ApplicationContext
 
     private void FensterGeschlossen(IntPtr hwnd)
     {
+        vorabPositioniert.Remove(hwnd); // Handles werden wiederverwendet
         if (verfolgt.Remove(hwnd, out var eintrag))
         {
             gespeichert[eintrag.Schluessel] = eintrag.Letzte;
@@ -368,9 +442,11 @@ internal sealed class HookFenster : NativeWindow
 {
     private readonly uint shellNachricht;
     private readonly Win32.WinEventDelegate winEventRueckruf; // Referenz halten, sonst räumt der GC den Delegaten ab
-    private readonly IntPtr winEventHook;
+    private readonly IntPtr bewegtHook;
+    private readonly IntPtr erstelltHook;
 
     public event Action<IntPtr> FensterErstellt;
+    public event Action<IntPtr> FensterAngelegt;
     public event Action<IntPtr> FensterZerstoert;
     public event Action<IntPtr> FensterBewegt;
     public event Action HotkeyUmschalten;
@@ -384,19 +460,28 @@ internal sealed class HookFenster : NativeWindow
         // nur Win+Umschalt+Z zum Umschalten der Automatik
         Win32.RegisterHotKey(Handle, 2, Win32.MOD_WIN | Win32.MOD_SHIFT | Win32.MOD_NOREPEAT, Win32.VK_Z);
         winEventRueckruf = BeiWinEvent;
-        winEventHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
+        bewegtHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
+            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
+        // EVENT_OBJECT_CREATE kommt, bevor das Fenster sichtbar wird — nur so
+        // lässt es sich vor der Öffnungsanimation an die Zielposition setzen
+        erstelltHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_CREATE, Win32.EVENT_OBJECT_CREATE,
             IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
     }
 
     private void BeiWinEvent(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit)
     {
-        if (idObject == 0 && hwnd != IntPtr.Zero) // OBJID_WINDOW
+        if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) // nur OBJID_WINDOW selbst
+            return;
+        if (ereignis == Win32.EVENT_OBJECT_CREATE)
+            FensterAngelegt?.Invoke(hwnd);
+        else
             FensterBewegt?.Invoke(hwnd);
     }
 
     public void Freigeben()
     {
-        Win32.UnhookWinEvent(winEventHook);
+        Win32.UnhookWinEvent(erstelltHook);
+        Win32.UnhookWinEvent(bewegtHook);
         Win32.UnregisterHotKey(Handle, 2);
         Win32.DeregisterShellHookWindow(Handle);
         DestroyHandle();
@@ -442,7 +527,10 @@ internal static class Win32
     public const int SW_SHOWMAXIMIZED = 3;
     public const int WPF_RESTORETOMAXIMIZED = 0x2;
     public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+    public const uint EVENT_OBJECT_CREATE = 0x8000;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
+    public const long WS_CHILD = 0x40000000;
+    public const int SW_HIDE = 0;
 
     public delegate void WinEventDelegate(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit);
 
