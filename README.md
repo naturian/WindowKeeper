@@ -9,14 +9,16 @@ Windows does not center new windows, and it does not remember where you
 put most of them either. When an application doesn't pick a position
 itself, Windows places its window cascading from the **top-left corner**
 of the screen — a default unchanged since the earliest Windows versions.
-Many built-in tools never opt out of it: Device Manager, Event Viewer and
-every other MMC console, plus a long tail of control-panel dialogs, forget
-their position on every single launch.
+Most of the classic built-in tooling never opts out of it: the management
+consoles, system dialogs, control-panel applets and console windows such
+as Command Prompt or PowerShell all forget their position on every single
+launch.
 
 On a modern display this is genuinely annoying. On an ultrawide monitor
 (this tool was born on a 5120×1440 one), "top-left" is half a meter away
-from where you are looking, so every Device Manager launch starts with
-dragging the same window across the same screen to the same place — again.
+from where you are looking, so every launch of one of these tools starts
+with dragging the same window across the same screen to the same place —
+again.
 
 The usual fixes have trade-offs: PowerToys is a large suite for what is a
 single missing feature, and script-based solutions add a runtime
@@ -29,8 +31,8 @@ plays at the target position instead of the corner.
 
 - **Position memory:** Every normal window is tracked on close and restored
   to the same position the next time it opens (including size and maximized
-  state) — even windows that center themselves (colorcpl) or open away from
-  the corner (msinfo32).
+  state) — regardless of whether it opens in the corner, centers itself or
+  appears anywhere else on screen.
 - **Centering as a fallback:** On the very first open (no position saved
   yet), only top-left openers are centered; all other unknown windows are
   left alone.
