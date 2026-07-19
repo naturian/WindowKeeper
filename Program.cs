@@ -54,7 +54,7 @@ internal sealed class MerkerKontext : ApplicationContext
     private readonly Dictionary<string, Platzierung> gespeichert;
     private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
     private readonly HashSet<IntPtr> vorabPositioniert = new();
-    private readonly Dictionary<IntPtr, (Platzierung Ziel, int Rest)> vorabKorrektur = new();
+    private readonly Dictionary<IntPtr, (Platzierung Ziel, int Uebrig)> vorabKorrektur = new();
     private bool aktiv = true;
 
     public MerkerKontext()
@@ -155,7 +155,7 @@ internal sealed class MerkerKontext : ApplicationContext
             return;
         try
         {
-            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd) || eintrag.Rest <= 0)
+            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd) || eintrag.Uebrig <= 0)
             {
                 vorabKorrektur.Remove(hwnd);
                 return;
@@ -164,7 +164,7 @@ internal sealed class MerkerKontext : ApplicationContext
                 return;
             if (r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
                 return; // steht am Ziel (auch nach unserem eigenen SetWindowPos)
-            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Rest - 1);
+            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Uebrig - 1);
             Win32.SetWindowPos(hwnd, IntPtr.Zero,
                 eintrag.Ziel.X, eintrag.Ziel.Y, eintrag.Ziel.Breite, eintrag.Ziel.Hoehe,
                 Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
