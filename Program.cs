@@ -117,34 +117,51 @@ internal sealed class MerkerKontext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
-                return;
+            bool obenLinks = r.Left - arbeit.Left <= Schwelle && r.Top - arbeit.Top <= Schwelle;
 
-            // Der Titel kann hier noch der generische sein (MMC setzt den
-            // Konsolentitel u. U. erst später) — dann hilft die eindeutige
-            // Zuordnung über Prozess|Klasse; bei Mehrdeutigkeit übernehmen
-            // die verzögerten Durchläufe
+            // Gemerkte Positionen gelten überall — auch für Fenster, die sich
+            // selbst zentrieren (colorcpl & Co.) oder jenseits der Schwelle
+            // öffnen (msinfo32). Der Titel kann hier noch der generische sein
+            // (MMC setzt den Konsolentitel u. U. erst später) — dann hilft bei
+            // Oben-links-Öffnern die eindeutige Zuordnung über Prozess|Klasse.
             string schluessel = SchluesselFuer(hwnd);
             Platzierung ziel = null;
-            if (!gespeichert.TryGetValue(schluessel, out ziel))
+            if (!gespeichert.TryGetValue(schluessel, out ziel) && obenLinks)
             {
                 string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
                 var passende = gespeichert
                     .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
                     .Take(2).ToList();
                 if (passende.Count > 1)
-                    return; // mehrdeutig -> nicht raten
+                    return; // mehrdeutig -> die verzögerten Durchläufe klären das
                 ziel = passende.Count == 1 ? passende[0].Value : null;
             }
-            if (ziel != null && (ziel.Maximiert || !IstSichtbar(ziel)))
-                return; // Maximieren übernimmt der verzögerte Durchlauf
 
-            Win32.ShowWindow(hwnd, Win32.SW_HIDE);
             if (ziel != null)
-                Anwenden(hwnd, ziel);
-            else
+            {
+                if (ziel.Maximiert || !IstSichtbar(ziel))
+                    return; // Maximieren übernimmt der verzögerte Durchlauf
+                if (ZweitfensterMitSchluessel(hwnd, schluessel))
+                {
+                    Verfolgen(hwnd, schluessel);
+                    return; // nicht auf das schon offene Fenster stapeln
+                }
+                if (r.Left != ziel.X || r.Top != ziel.Y)
+                {
+                    Win32.ShowWindow(hwnd, Win32.SW_HIDE);
+                    Anwenden(hwnd, ziel);
+                    Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+                }
+            }
+            else if (obenLinks)
+            {
+                // unbekanntes Fenster ohne eigene Positionsverwaltung: zentrieren
+                Win32.ShowWindow(hwnd, Win32.SW_HIDE);
                 Zentrieren(hwnd);
-            Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+                Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+            }
+            // in allen Fällen verfolgen, damit die Schließposition gespeichert
+            // wird — auch bei Fenstern, die wir (noch) nicht anfassen
             Verfolgen(hwnd, schluessel);
         }
         catch
@@ -165,19 +182,35 @@ internal sealed class MerkerKontext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
-                return; // öffnet nicht oben links -> in Ruhe lassen
+            bool obenLinks = r.Left - arbeit.Left <= Schwelle && r.Top - arbeit.Top <= Schwelle;
 
             string schluessel = SchluesselFuer(hwnd);
             if (gespeichert.TryGetValue(schluessel, out var p) && IstSichtbar(p))
-                Anwenden(hwnd, p);
-            else
+            {
+                if (!ZweitfensterMitSchluessel(hwnd, schluessel))
+                    Anwenden(hwnd, p);
+            }
+            else if (obenLinks)
+            {
                 Zentrieren(hwnd);
+            }
             Verfolgen(hwnd, schluessel);
         }
         catch
         {
         }
+    }
+
+    // Läuft schon ein anderes Fenster mit demselben Schlüssel? Dann das neue
+    // nicht auf dieselbe Position schieben (z. B. zweites Explorer-Fenster).
+    private bool ZweitfensterMitSchluessel(IntPtr hwnd, string schluessel)
+    {
+        foreach (var (anderes, eintrag) in verfolgt)
+        {
+            if (anderes != hwnd && eintrag.Schluessel == schluessel && Win32.IsWindow(anderes))
+                return true;
+        }
+        return false;
     }
 
     private void FensterGeschlossen(IntPtr hwnd)

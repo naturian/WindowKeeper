@@ -4,13 +4,15 @@ Kleines Windows-Tool (.NET 9, WinForms, ohne sichtbares Fenster), das das
 Standard-Verhalten von Windows korrigiert, Fenster kaskadierend oben links
 zu öffnen (z. B. Geräte-Manager und andere MMC-/System-Tools):
 
-- **Positions-Gedächtnis:** Fenster, die oben links aufgehen, werden an der
-  Position wiederhergestellt, an der sie zuletzt geschlossen wurden
-  (inkl. Größe und Maximiert-Status).
-- **Zentrieren als Fallback:** Nur beim allerersten Öffnen (wenn noch keine
-  Position gemerkt ist) wird das Fenster auf dem aktuellen Monitor zentriert.
-- Fenster, die nicht oben links aufgehen (Programme, die ihre Position selbst
-  verwalten), werden **nicht angefasst**.
+- **Positions-Gedächtnis:** Jedes normale Fenster wird beim Schließen
+  verfolgt und beim nächsten Öffnen an derselben Position wiederhergestellt
+  (inkl. Größe und Maximiert-Status) — auch Fenster, die sich selbst
+  zentrieren (colorcpl) oder abseits der Ecke öffnen (msinfo32).
+- **Zentrieren als Fallback:** Beim allerersten Öffnen (noch keine Position
+  gemerkt) werden nur Oben-links-Öffner zentriert; alle anderen unbekannten
+  Fenster bleiben unangetastet.
+- Öffnet ein zweites Fenster mit demselben Schlüssel, wird es nicht auf das
+  bereits offene gestapelt.
 
 ## Bedienung
 
