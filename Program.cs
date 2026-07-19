@@ -13,9 +13,26 @@ internal static class Programm
         using var einzelinstanz = new Mutex(true, "WindowKeeper_EinzelInstanz", out bool erste);
         if (!erste)
             return;
+        // Fehler protokollieren statt abstürzen — ein Hintergrundwerkzeug
+        // darf nicht wegen eines einzelnen Fensters sterben
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (s, e) => Protokolliere(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (s, e) => Protokolliere(e.ExceptionObject);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.Run(new MerkerKontext());
+    }
+
+    private static void Protokolliere(object fehler)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "windowkeeper-fehler.log"),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\r\n{fehler}\r\n\r\n");
+        }
+        catch
+        {
+        }
     }
 }
 
