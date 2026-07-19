@@ -68,13 +68,23 @@ internal sealed class MerkerKontext : ApplicationContext
     private readonly NotifyIcon tray;
     private ToolStripMenuItem aktivEintrag;
     private readonly System.Windows.Forms.Timer verfolgungsTimer;
-    private readonly Dictionary<string, Platzierung> gespeichert;
+    // Positionen werden pro Monitor-Konstellation (Profil) gemerkt, damit
+    // z. B. Ultrawide- und TV-Auflösung sich nicht gegenseitig überschreiben
+    private readonly Dictionary<string, Dictionary<string, Platzierung>> alleProfile;
+    private Dictionary<string, Platzierung> gespeichert; // aktives Profil
+    private string aktivesProfil;
     private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
     private bool aktiv = true;
 
     public MerkerKontext()
     {
-        gespeichert = Laden();
+        alleProfile = Laden();
+        aktivesProfil = ProfilSchluessel();
+        if (!alleProfile.TryGetValue(aktivesProfil, out gespeichert))
+        {
+            gespeichert = new Dictionary<string, Platzierung>();
+            alleProfile[aktivesProfil] = gespeichert;
+        }
 
         hook = new HookFenster();
         hook.FensterErstellt += NeuesFenster;
@@ -86,9 +96,40 @@ internal sealed class MerkerKontext : ApplicationContext
         verfolgungsTimer.Tick += (s, e) => VerfolgteAktualisieren();
         verfolgungsTimer.Start();
 
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += BeiAnzeigeWechsel;
+
         tray = TrayErstellen();
 
         Application.ApplicationExit += (s, e) => Aufraeumen();
+    }
+
+    // ---- Profile pro Monitor-Konstellation ----------------------------------
+
+    private static string ProfilSchluessel() =>
+        string.Join(";", Screen.AllScreens
+            .Select(s => $"{s.Bounds.Width}x{s.Bounds.Height}@{s.Bounds.X},{s.Bounds.Y}")
+            .OrderBy(x => x, StringComparer.Ordinal));
+
+    private void BeiAnzeigeWechsel(object sender, EventArgs e)
+    {
+        try
+        {
+            string profil = ProfilSchluessel();
+            if (profil == aktivesProfil)
+                return;
+            Speichern(); // Stand des bisherigen Profils sichern
+            aktivesProfil = profil;
+            if (!alleProfile.TryGetValue(profil, out gespeichert))
+            {
+                gespeichert = new Dictionary<string, Platzierung>();
+                alleProfile[profil] = gespeichert;
+            }
+            // offene Fenster laufen weiter mit; ihre Schließposition landet
+            // im neuen Profil — also in der jetzt gültigen Auflösung
+        }
+        catch
+        {
+        }
     }
 
     // ---- Reaktion auf neue Fenster -----------------------------------------
@@ -379,18 +420,32 @@ internal sealed class MerkerKontext : ApplicationContext
 
     // ---- Speichern / Laden --------------------------------------------------
 
-    private static Dictionary<string, Platzierung> Laden()
+    private static Dictionary<string, Dictionary<string, Platzierung>> Laden()
     {
         try
         {
             if (File.Exists(DatenPfad))
-                return JsonSerializer.Deserialize<Dictionary<string, Platzierung>>(File.ReadAllText(DatenPfad))
-                    ?? new Dictionary<string, Platzierung>();
+            {
+                string text = File.ReadAllText(DatenPfad);
+                try
+                {
+                    var profile = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, Platzierung>>>(text);
+                    if (profile != null)
+                        return profile;
+                }
+                catch (JsonException)
+                {
+                    // altes einstufiges Format: unter dem aktuellen Profil übernehmen
+                    var alt = JsonSerializer.Deserialize<Dictionary<string, Platzierung>>(text);
+                    if (alt != null)
+                        return new Dictionary<string, Dictionary<string, Platzierung>> { [ProfilSchluessel()] = alt };
+                }
+            }
         }
         catch
         {
         }
-        return new Dictionary<string, Platzierung>();
+        return new Dictionary<string, Dictionary<string, Platzierung>>();
     }
 
     private void Speichern()
@@ -399,7 +454,7 @@ internal sealed class MerkerKontext : ApplicationContext
         {
             Directory.CreateDirectory(Path.GetDirectoryName(DatenPfad));
             File.WriteAllText(DatenPfad,
-                JsonSerializer.Serialize(gespeichert, new JsonSerializerOptions { WriteIndented = true }));
+                JsonSerializer.Serialize(alleProfile, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch
         {
@@ -454,6 +509,7 @@ internal sealed class MerkerKontext : ApplicationContext
 
     private void Aufraeumen()
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= BeiAnzeigeWechsel;
         verfolgungsTimer.Stop();
         foreach (var eintrag in verfolgt.Values)
             gespeichert[eintrag.Schluessel] = eintrag.Letzte;

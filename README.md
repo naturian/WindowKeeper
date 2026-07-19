@@ -36,6 +36,10 @@ zu öffnen (z. B. Geräte-Manager und andere MMC-/System-Tools):
 - Positionen werden per `GetWindowPlacement` verfolgt (alle 4 s) und beim
   Schließen unter `%APPDATA%\WindowKeeper\positionen.json` gespeichert.
   Schlüssel: `Prozessname|Fensterklasse|Titel`.
+- Gespeichert wird **pro Monitor-Konstellation** (Auflösung + Anordnung):
+  Bei einem Auflösungswechsel (`DisplaySettingsChanged`) schaltet WindowKeeper
+  automatisch auf das passende Profil um; die Setups überschreiben sich nicht
+  gegenseitig. Alte einstufige Positionsdateien werden beim Start migriert.
 
 ## Bauen & Einrichten
 
