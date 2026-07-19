@@ -100,16 +100,25 @@ internal sealed class MerkerKontext : ApplicationContext
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
             if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
                 return;
-            if (FensterTitel(hwnd).Length == 0)
-            {
-                if (versuch < 8)
-                    Verzoegert(30, () => FruehPositionieren(hwnd, versuch + 1));
-                return;
-            }
-
-            string schluessel = SchluesselFuer(hwnd);
+            string schluessel = SchluesselFuer(hwnd); // endet bei leerem Titel mit "|"
             Platzierung ziel;
-            if (gespeichert.TryGetValue(schluessel, out var p))
+            if (schluessel.EndsWith('|'))
+            {
+                // Titel wird oft erst beim Anzeigen gesetzt (z. B. MMC). Wenn
+                // genau ein gemerkter Eintrag zu Prozess|Klasse passt, ist die
+                // Zuordnung trotzdem eindeutig — sonst kurz auf den Titel warten.
+                var passende = gespeichert
+                    .Where(e => e.Key.StartsWith(schluessel, StringComparison.Ordinal))
+                    .Take(2).ToList();
+                if (passende.Count != 1 || passende[0].Value.Maximiert || !IstSichtbar(passende[0].Value))
+                {
+                    if (versuch < 8)
+                        Verzoegert(30, () => FruehPositionieren(hwnd, versuch + 1));
+                    return;
+                }
+                ziel = passende[0].Value;
+            }
+            else if (gespeichert.TryGetValue(schluessel, out var p))
             {
                 if (p.Maximiert || !IstSichtbar(p))
                     return; // Maximieren übernimmt die normale Prüfung
