@@ -14,6 +14,19 @@ corner (e.g. Device Manager and other MMC/system tools):
 - If a second window with the same key opens, it is not stacked onto the
   one that is already open.
 
+## Download & install
+
+Grab the latest zip from the
+[releases page](https://github.com/naturian/WindowKeeper/releases):
+
+- `…win-x64.zip` — small, requires the
+  [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+- `…win-x64-selfcontained.zip` — larger, runs without any prerequisites
+
+Extract anywhere and run `WindowKeeper.exe --install` once (single
+elevation prompt). `--uninstall` removes it again. Releases are built
+automatically by GitHub Actions on every version tag.
+
 ## Usage
 
 - `Win+Shift+Z` toggles automatic positioning. (`Win+Z` intentionally stays

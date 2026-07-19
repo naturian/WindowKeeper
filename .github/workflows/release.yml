@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Determine version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $v = $env:GITHUB_REF_NAME.TrimStart('v')
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Publish (framework-dependent)
+        run: dotnet publish -c Release -p:Version=${{ steps.version.outputs.version }} -o publish-fd
+
+      - name: Publish (self-contained)
+        run: dotnet publish -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:Version=${{ steps.version.outputs.version }} -o publish-sc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish-fd\* -DestinationPath "WindowKeeper-${{ steps.version.outputs.version }}-win-x64.zip"
+          Compress-Archive -Path publish-sc\* -DestinationPath "WindowKeeper-${{ steps.version.outputs.version }}-win-x64-selfcontained.zip"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: WindowKeeper-*.zip
+          generate_release_notes: true
+          body: |
+            **Two downloads:**
+            - `…win-x64.zip` — small, requires the [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+            - `…win-x64-selfcontained.zip` — larger, runs without any prerequisites
+
+            Extract anywhere and run `WindowKeeper.exe --install` once (single elevation prompt). `--uninstall` removes it again.
