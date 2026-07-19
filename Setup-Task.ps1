@@ -1,14 +1,9 @@
-# Richtet die geplante Aufgabe "WindowKeeper" ein (bei Anmeldung, höchste
-# Privilegien — nötig, weil z. B. der Geräte-Manager erhöht läuft und UIPI
-# sonst das Verschieben seiner Fenster blockiert).
+# Registers the "WindowKeeper" scheduled task (run at logon, highest
+# privileges). Elevated rights are required because e.g. Device Manager
+# auto-elevates, and UIPI would otherwise block moving its windows.
 $ErrorActionPreference = 'Stop'
 
 $exe = "$env:USERPROFILE\Documents\WindowKeeper\publish\WindowKeeper.exe"
-
-# Aufgaben früherer Namen entfernen
-'FensterZentrieren', 'FensterMerker' | ForEach-Object {
-    Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
-}
 
 $action    = New-ScheduledTaskAction -Execute $exe
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
@@ -18,4 +13,4 @@ $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGo
 Register-ScheduledTask -TaskName 'WindowKeeper' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName 'WindowKeeper'
 
-'FERTIG' | Out-File "$env:USERPROFILE\Documents\WindowKeeper\setup-ergebnis.txt"
+'DONE' | Out-File "$env:USERPROFILE\Documents\WindowKeeper\setup-result.txt"

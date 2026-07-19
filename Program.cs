@@ -5,30 +5,30 @@ using System.Text.Json;
 
 namespace WindowKeeper;
 
-internal static class Programm
+internal static class Program
 {
     [STAThread]
     private static void Main()
     {
-        using var einzelinstanz = new Mutex(true, "WindowKeeper_EinzelInstanz", out bool erste);
-        if (!erste)
+        using var singleInstance = new Mutex(true, "WindowKeeper_SingleInstance", out bool first);
+        if (!first)
             return;
-        // Fehler protokollieren statt abstürzen — ein Hintergrundwerkzeug
-        // darf nicht wegen eines einzelnen Fensters sterben
+        // Log errors instead of crashing — a background utility must not die
+        // because of a single misbehaving window
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
-        Application.ThreadException += (s, e) => Protokolliere(e.Exception);
-        AppDomain.CurrentDomain.UnhandledException += (s, e) => Protokolliere(e.ExceptionObject);
+        Application.ThreadException += (s, e) => LogError(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (s, e) => LogError(e.ExceptionObject);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
-        Application.Run(new MerkerKontext());
+        Application.Run(new KeeperContext());
     }
 
-    private static void Protokolliere(object fehler)
+    private static void LogError(object error)
     {
         try
         {
-            File.AppendAllText(Path.Combine(Path.GetTempPath(), "windowkeeper-fehler.log"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\r\n{fehler}\r\n\r\n");
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "windowkeeper-error.log"),
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\r\n{error}\r\n\r\n");
         }
         catch
         {
@@ -36,294 +36,293 @@ internal static class Programm
     }
 }
 
-// Gemerkte Normalposition eines Fensters
-internal sealed class Platzierung
+// Remembered normal position of a window
+internal sealed class Placement
 {
     public int X { get; set; }
     public int Y { get; set; }
-    public int Breite { get; set; }
-    public int Hoehe { get; set; }
-    public bool Maximiert { get; set; }
+    public int Width { get; set; }
+    public int Height { get; set; }
+    public bool Maximized { get; set; }
 }
 
-internal sealed class MerkerKontext : ApplicationContext
+internal sealed class KeeperContext : ApplicationContext
 {
-    // ===== Einstellungen =====================================================
-    // Nur Fenster anfassen, die nahe der linken oberen Ecke aufgehen (typisch
-    // für Geräte-Manager & andere MMC-/System-Tools). Programme, die ihre
-    // Position selbst verwalten, öffnen woanders und bleiben unberührt.
-    private const int Schwelle = 350;
-    private const int ErsterDurchlaufMs = 150;
-    // Manche Programme (z. B. MMC) setzen ihre Position erst verzögert nach
-    // der Fenstererstellung — daher ein zweiter Durchlauf.
-    private const int ZweiterDurchlaufMs = 700;
-    private const int VerfolgungsIntervallMs = 4000;
+    // ===== Settings ==========================================================
+    // The top-left threshold decides which windows count as "opened in the
+    // top-left corner" (typical for Device Manager and other MMC/system
+    // tools that never manage their own position).
+    private const int TopLeftThreshold = 350;
+    private const int FirstPassMs = 150;
+    // Some programs (e.g. MMC) set their position only after the window has
+    // been created — hence a second delayed pass.
+    private const int SecondPassMs = 700;
+    private const int TrackingIntervalMs = 4000;
     // =========================================================================
 
-    private static readonly string DatenPfad = Path.Combine(
+    private static readonly string DataPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "WindowKeeper", "positionen.json");
+        "WindowKeeper", "positions.json");
 
-    private readonly HookFenster hook;
+    private readonly HookWindow hook;
     private readonly NotifyIcon tray;
-    private ToolStripMenuItem aktivEintrag;
-    private readonly System.Windows.Forms.Timer verfolgungsTimer;
-    // Positionen werden pro Monitor-Konstellation (Profil) gemerkt, damit
-    // z. B. Ultrawide- und TV-Auflösung sich nicht gegenseitig überschreiben
-    private readonly Dictionary<string, Dictionary<string, Platzierung>> alleProfile;
-    private Dictionary<string, Platzierung> gespeichert; // aktives Profil
-    private string aktivesProfil;
-    private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
-    private bool aktiv = true;
+    private ToolStripMenuItem enabledItem;
+    private readonly System.Windows.Forms.Timer trackingTimer;
+    // Positions are stored per monitor configuration (profile), so that e.g.
+    // an ultrawide setup and a TV resolution do not overwrite each other
+    private readonly Dictionary<string, Dictionary<string, Placement>> profiles;
+    private Dictionary<string, Placement> saved; // active profile
+    private string activeProfile;
+    private readonly Dictionary<IntPtr, (string Key, Placement Last)> tracked = new();
+    private bool enabled = true;
 
-    public MerkerKontext()
+    public KeeperContext()
     {
-        alleProfile = Laden();
-        aktivesProfil = ProfilSchluessel();
-        if (!alleProfile.TryGetValue(aktivesProfil, out gespeichert))
+        profiles = Load();
+        activeProfile = ProfileKey();
+        if (!profiles.TryGetValue(activeProfile, out saved))
         {
-            gespeichert = new Dictionary<string, Platzierung>();
-            alleProfile[aktivesProfil] = gespeichert;
+            saved = new Dictionary<string, Placement>();
+            profiles[activeProfile] = saved;
         }
 
-        hook = new HookFenster();
-        hook.FensterErstellt += NeuesFenster;
-        hook.FensterZerstoert += FensterGeschlossen;
-        hook.FensterBewegt += FensterBewegt;
-        hook.HotkeyUmschalten += Umschalten;
+        hook = new HookWindow();
+        hook.WindowCreated += OnWindowCreated;
+        hook.WindowDestroyed += OnWindowDestroyed;
+        hook.WindowMoved += OnWindowMoved;
+        hook.HotkeyToggle += Toggle;
 
-        verfolgungsTimer = new System.Windows.Forms.Timer { Interval = VerfolgungsIntervallMs };
-        verfolgungsTimer.Tick += (s, e) => VerfolgteAktualisieren();
-        verfolgungsTimer.Start();
+        trackingTimer = new System.Windows.Forms.Timer { Interval = TrackingIntervalMs };
+        trackingTimer.Tick += (s, e) => UpdateTracked();
+        trackingTimer.Start();
 
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += BeiAnzeigeWechsel;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
 
-        tray = TrayErstellen();
+        tray = CreateTray();
 
-        Application.ApplicationExit += (s, e) => Aufraeumen();
+        Application.ApplicationExit += (s, e) => Cleanup();
     }
 
-    // ---- Profile pro Monitor-Konstellation ----------------------------------
+    // ---- Profiles per monitor configuration ---------------------------------
 
-    private static string ProfilSchluessel() =>
+    private static string ProfileKey() =>
         string.Join(";", Screen.AllScreens
             .Select(s => $"{s.Bounds.Width}x{s.Bounds.Height}@{s.Bounds.X},{s.Bounds.Y}")
             .OrderBy(x => x, StringComparer.Ordinal));
 
-    private void BeiAnzeigeWechsel(object sender, EventArgs e)
+    private void OnDisplayChanged(object sender, EventArgs e)
     {
         try
         {
-            string profil = ProfilSchluessel();
-            if (profil == aktivesProfil)
+            string profile = ProfileKey();
+            if (profile == activeProfile)
                 return;
-            Speichern(); // Stand des bisherigen Profils sichern
-            aktivesProfil = profil;
-            if (!alleProfile.TryGetValue(profil, out gespeichert))
+            Save(); // persist the profile we are leaving
+            activeProfile = profile;
+            if (!profiles.TryGetValue(profile, out saved))
             {
-                gespeichert = new Dictionary<string, Platzierung>();
-                alleProfile[profil] = gespeichert;
+                saved = new Dictionary<string, Placement>();
+                profiles[profile] = saved;
             }
-            // offene Fenster laufen weiter mit; ihre Schließposition landet
-            // im neuen Profil — also in der jetzt gültigen Auflösung
+            // open windows keep running; their closing position is stored in
+            // the new profile — i.e. for the resolution that is now active
         }
         catch
         {
         }
     }
 
-    // ---- Reaktion auf neue Fenster -----------------------------------------
+    // ---- Reacting to new windows --------------------------------------------
 
-    private void NeuesFenster(IntPtr hwnd)
+    private void OnWindowCreated(IntPtr hwnd)
     {
-        if (!aktiv)
+        if (!enabled)
             return;
-        // sofort: das Fenster ist gerade erst sichtbar geworden — Verstecken,
-        // Positionieren und Neu-Anzeigen lässt die Öffnungsanimation an der
-        // Zielposition ablaufen statt oben links
-        SofortKorrigieren(hwnd);
-        // verzögerte Durchläufe als Sicherheitsnetz (MMC positioniert nach)
-        Verzoegert(ErsterDurchlaufMs, () => FensterPruefen(hwnd));
-        Verzoegert(ZweiterDurchlaufMs, () => FensterPruefen(hwnd));
+        // immediately: the window has only just become visible — hiding,
+        // positioning and re-showing it makes the open animation play at the
+        // target position instead of the top-left corner
+        CorrectImmediately(hwnd);
+        // delayed passes as a safety net (MMC repositions itself late)
+        Delay(FirstPassMs, () => CheckWindow(hwnd));
+        Delay(SecondPassMs, () => CheckWindow(hwnd));
     }
 
-    private void SofortKorrigieren(IntPtr hwnd)
+    private void CorrectImmediately(IntPtr hwnd)
     {
         try
         {
-            if (!IstNormalesFenster(hwnd))
+            if (!IsNormalWindow(hwnd))
                 return;
             if (Win32.IsIconic(hwnd) || Win32.IsZoomed(hwnd))
                 return;
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
-            var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            bool obenLinks = r.Left - arbeit.Left <= Schwelle && r.Top - arbeit.Top <= Schwelle;
+            var work = Screen.FromHandle(hwnd).WorkingArea;
+            bool topLeft = r.Left - work.Left <= TopLeftThreshold && r.Top - work.Top <= TopLeftThreshold;
 
-            // Gemerkte Positionen gelten überall — auch für Fenster, die sich
-            // selbst zentrieren (colorcpl & Co.) oder jenseits der Schwelle
-            // öffnen (msinfo32). Der Titel kann hier noch der generische sein
-            // (MMC setzt den Konsolentitel u. U. erst später) — dann hilft bei
-            // Oben-links-Öffnern die eindeutige Zuordnung über Prozess|Klasse.
-            string schluessel = SchluesselFuer(hwnd);
-            Platzierung ziel = null;
-            if (!gespeichert.TryGetValue(schluessel, out ziel) && obenLinks)
+            // Saved positions apply everywhere — including windows that center
+            // themselves (colorcpl etc.) or open beyond the threshold
+            // (msinfo32). The title may still be generic at this point (MMC
+            // sets the console title later) — for top-left openers a unique
+            // process|class match resolves the target anyway.
+            string key = KeyFor(hwnd);
+            Placement target = null;
+            if (!saved.TryGetValue(key, out target) && topLeft)
             {
-                string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
-                var passende = gespeichert
-                    .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
+                string prefix = key[..(key.LastIndexOf('|') + 1)];
+                var matches = saved
+                    .Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal))
                     .Take(2).ToList();
-                if (passende.Count > 1)
-                    return; // mehrdeutig -> die verzögerten Durchläufe klären das
-                ziel = passende.Count == 1 ? passende[0].Value : null;
+                if (matches.Count > 1)
+                    return; // ambiguous -> the delayed passes will sort it out
+                target = matches.Count == 1 ? matches[0].Value : null;
             }
 
-            if (ziel != null)
+            if (target != null)
             {
-                if (ziel.Maximiert || !IstSichtbar(ziel))
-                    return; // Maximieren übernimmt der verzögerte Durchlauf
-                if (ZweitfensterMitSchluessel(hwnd, schluessel))
+                if (target.Maximized || !IsVisibleOnAnyScreen(target))
+                    return; // maximizing is handled by the delayed pass
+                if (AnotherWindowWithKey(hwnd, key))
                 {
-                    Verfolgen(hwnd, schluessel);
-                    return; // nicht auf das schon offene Fenster stapeln
+                    Track(hwnd, key);
+                    return; // don't stack onto the window that is already open
                 }
-                if (r.Left != ziel.X || r.Top != ziel.Y)
+                if (r.Left != target.X || r.Top != target.Y)
                 {
                     Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-                    Anwenden(hwnd, ziel);
+                    Apply(hwnd, target);
                     Win32.ShowWindow(hwnd, Win32.SW_SHOW);
                 }
             }
-            else if (obenLinks)
+            else if (topLeft)
             {
-                // unbekanntes Fenster ohne eigene Positionsverwaltung: zentrieren
+                // unknown window without its own position management: center it
                 Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-                Zentrieren(hwnd);
+                Center(hwnd);
                 Win32.ShowWindow(hwnd, Win32.SW_SHOW);
             }
-            // in allen Fällen verfolgen, damit die Schließposition gespeichert
-            // wird — auch bei Fenstern, die wir (noch) nicht anfassen
-            Verfolgen(hwnd, schluessel);
+            // track in every case so the closing position gets stored — even
+            // for windows we do not (yet) touch
+            Track(hwnd, key);
         }
         catch
         {
         }
     }
 
-    private void FensterPruefen(IntPtr hwnd)
+    private void CheckWindow(IntPtr hwnd)
     {
-        if (!aktiv)
+        if (!enabled)
             return;
         try
         {
-            if (!IstNormalesFenster(hwnd))
+            if (!IsNormalWindow(hwnd))
                 return;
             if (Win32.IsIconic(hwnd) || Win32.IsZoomed(hwnd))
                 return;
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
-            var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            bool obenLinks = r.Left - arbeit.Left <= Schwelle && r.Top - arbeit.Top <= Schwelle;
+            var work = Screen.FromHandle(hwnd).WorkingArea;
+            bool topLeft = r.Left - work.Left <= TopLeftThreshold && r.Top - work.Top <= TopLeftThreshold;
 
-            string schluessel = SchluesselFuer(hwnd);
-            if (gespeichert.TryGetValue(schluessel, out var p) && IstSichtbar(p))
+            string key = KeyFor(hwnd);
+            if (saved.TryGetValue(key, out var p) && IsVisibleOnAnyScreen(p))
             {
-                if (!ZweitfensterMitSchluessel(hwnd, schluessel))
-                    Anwenden(hwnd, p);
+                if (!AnotherWindowWithKey(hwnd, key))
+                    Apply(hwnd, p);
             }
-            else if (obenLinks)
+            else if (topLeft)
             {
-                Zentrieren(hwnd);
+                Center(hwnd);
             }
-            Verfolgen(hwnd, schluessel);
+            Track(hwnd, key);
         }
         catch
         {
         }
     }
 
-    // Läuft schon ein anderes Fenster mit demselben Schlüssel? Dann das neue
-    // nicht auf dieselbe Position schieben (z. B. zweites Explorer-Fenster).
-    private bool ZweitfensterMitSchluessel(IntPtr hwnd, string schluessel)
+    private void OnWindowDestroyed(IntPtr hwnd)
     {
-        foreach (var (anderes, eintrag) in verfolgt)
+        if (tracked.Remove(hwnd, out var entry))
         {
-            if (anderes != hwnd && eintrag.Schluessel == schluessel && Win32.IsWindow(anderes))
+            saved[entry.Key] = entry.Last;
+            Save();
+        }
+    }
+
+    // Is another window with the same key already open? Then don't move the
+    // new one onto the same spot (e.g. a second Explorer window).
+    private bool AnotherWindowWithKey(IntPtr hwnd, string key)
+    {
+        foreach (var (other, entry) in tracked)
+        {
+            if (other != hwnd && entry.Key == key && Win32.IsWindow(other))
                 return true;
         }
         return false;
     }
 
-    private void FensterGeschlossen(IntPtr hwnd)
-    {
-        if (verfolgt.Remove(hwnd, out var eintrag))
-        {
-            gespeichert[eintrag.Schluessel] = eintrag.Letzte;
-            Speichern();
-        }
-    }
+    // ---- Tracking positions -------------------------------------------------
 
-    // ---- Positionen verfolgen ----------------------------------------------
-
-    // Sofort beim Ende eines Verschiebens/Vergrößerns aktualisieren — sonst
-    // ginge die neue Position verloren, wenn das Fenster schneller geschlossen
-    // wird, als der Timer abtastet
-    private void FensterBewegt(IntPtr hwnd)
+    // Update immediately when a move/resize ends — otherwise the new position
+    // would be lost if the window is closed faster than the timer samples
+    private void OnWindowMoved(IntPtr hwnd)
     {
-        if (verfolgt.TryGetValue(hwnd, out var eintrag))
+        if (tracked.TryGetValue(hwnd, out var entry))
         {
-            var p = AktuellePlatzierung(hwnd);
+            var p = CurrentPlacement(hwnd);
             if (p != null)
-                verfolgt[hwnd] = (eintrag.Schluessel, p);
+                tracked[hwnd] = (entry.Key, p);
         }
     }
 
-    private void Verfolgen(IntPtr hwnd, string schluessel)
+    private void Track(IntPtr hwnd, string key)
     {
-        var p = AktuellePlatzierung(hwnd);
+        var p = CurrentPlacement(hwnd);
         if (p != null)
-            verfolgt[hwnd] = (schluessel, p);
+            tracked[hwnd] = (key, p);
     }
 
-    private void VerfolgteAktualisieren()
+    private void UpdateTracked()
     {
-        bool geaendert = false;
-        foreach (var (hwnd, eintrag) in verfolgt.ToList())
+        bool changed = false;
+        foreach (var (hwnd, entry) in tracked.ToList())
         {
             if (!Win32.IsWindow(hwnd))
             {
-                verfolgt.Remove(hwnd);
-                gespeichert[eintrag.Schluessel] = eintrag.Letzte;
-                geaendert = true;
+                tracked.Remove(hwnd);
+                saved[entry.Key] = entry.Last;
+                changed = true;
                 continue;
             }
-            var p = AktuellePlatzierung(hwnd);
+            var p = CurrentPlacement(hwnd);
             if (p != null)
-                verfolgt[hwnd] = (eintrag.Schluessel, p);
+                tracked[hwnd] = (entry.Key, p);
         }
-        if (geaendert)
-            Speichern();
+        if (changed)
+            Save();
     }
 
-    // ---- Fenster bewegen ----------------------------------------------------
+    // ---- Moving windows -----------------------------------------------------
 
-    private static void Anwenden(IntPtr hwnd, Platzierung p)
+    private static void Apply(IntPtr hwnd, Placement p)
     {
-        var wp = Win32.WINDOWPLACEMENT.Neu();
+        var wp = Win32.WINDOWPLACEMENT.Create();
         if (!Win32.GetWindowPlacement(hwnd, ref wp))
             return;
         wp.rcNormalPosition = new Win32.RECT
         {
             Left = p.X,
             Top = p.Y,
-            Right = p.X + p.Breite,
-            Bottom = p.Y + p.Hoehe,
+            Right = p.X + p.Width,
+            Bottom = p.Y + p.Height,
         };
-        wp.showCmd = p.Maximiert ? Win32.SW_SHOWMAXIMIZED : Win32.SW_SHOWNORMAL;
+        wp.showCmd = p.Maximized ? Win32.SW_SHOWMAXIMIZED : Win32.SW_SHOWNORMAL;
         Win32.SetWindowPlacement(hwnd, ref wp);
     }
 
-    private static void Zentrieren(IntPtr hwnd)
+    private static void Center(IntPtr hwnd)
     {
         if (hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd))
             return;
@@ -332,164 +331,154 @@ internal sealed class MerkerKontext : ApplicationContext
         if (!Win32.GetWindowRect(hwnd, out var r))
             return;
         var wa = Screen.FromHandle(hwnd).WorkingArea;
-        int b = r.Right - r.Left, h = r.Bottom - r.Top;
+        int w = r.Right - r.Left, h = r.Bottom - r.Top;
         Win32.SetWindowPos(hwnd, IntPtr.Zero,
-            wa.Left + (wa.Width - b) / 2, wa.Top + (wa.Height - h) / 2, 0, 0,
+            wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2, 0, 0,
             Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
     }
 
-    // ---- Hilfsfunktionen ----------------------------------------------------
+    // ---- Helpers ------------------------------------------------------------
 
-    private static bool IstNormalesFenster(IntPtr hwnd)
+    private static bool IsNormalWindow(IntPtr hwnd)
     {
         if (!Win32.IsWindow(hwnd) || !Win32.IsWindowVisible(hwnd))
             return false;
-        long stil = Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE).ToInt64();
-        if ((stil & Win32.WS_CAPTION) != Win32.WS_CAPTION)
+        long style = Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE).ToInt64();
+        if ((style & Win32.WS_CAPTION) != Win32.WS_CAPTION)
             return false;
-        long exStil = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
-        if ((exStil & Win32.WS_EX_TOOLWINDOW) != 0)
+        long exStyle = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
+        if ((exStyle & Win32.WS_EX_TOOLWINDOW) != 0)
             return false;
-        return FensterTitel(hwnd).Length > 0;
+        return WindowTitle(hwnd).Length > 0;
     }
 
-    private static string SchluesselFuer(IntPtr hwnd)
+    private static string KeyFor(IntPtr hwnd)
     {
         Win32.GetWindowThreadProcessId(hwnd, out uint pid);
-        string prozess = "?";
+        string process = "?";
         try
         {
             using var proc = Process.GetProcessById((int)pid);
-            prozess = proc.ProcessName;
+            process = proc.ProcessName;
         }
         catch
         {
         }
-        return prozess + "|" + KlassenName(hwnd) + "|" + FensterTitel(hwnd);
+        return process + "|" + ClassName(hwnd) + "|" + WindowTitle(hwnd);
     }
 
-    private static Platzierung AktuellePlatzierung(IntPtr hwnd)
+    private static Placement CurrentPlacement(IntPtr hwnd)
     {
-        var wp = Win32.WINDOWPLACEMENT.Neu();
+        var wp = Win32.WINDOWPLACEMENT.Create();
         if (!Win32.GetWindowPlacement(hwnd, ref wp))
             return null;
         var r = wp.rcNormalPosition;
         bool max = wp.showCmd == Win32.SW_SHOWMAXIMIZED
             || (wp.showCmd == Win32.SW_SHOWMINIMIZED && (wp.flags & Win32.WPF_RESTORETOMAXIMIZED) != 0);
-        return new Platzierung
+        return new Placement
         {
             X = r.Left,
             Y = r.Top,
-            Breite = r.Right - r.Left,
-            Hoehe = r.Bottom - r.Top,
-            Maximiert = max,
+            Width = r.Right - r.Left,
+            Height = r.Bottom - r.Top,
+            Maximized = max,
         };
     }
 
-    private static bool IstSichtbar(Platzierung p)
+    private static bool IsVisibleOnAnyScreen(Placement p)
     {
-        var rect = new Rectangle(p.X, p.Y, p.Breite, p.Hoehe);
+        var rect = new Rectangle(p.X, p.Y, p.Width, p.Height);
         return Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(rect));
     }
 
-    private static string FensterTitel(IntPtr hwnd)
+    private static string WindowTitle(IntPtr hwnd)
     {
         var sb = new StringBuilder(512);
         _ = Win32.GetWindowText(hwnd, sb, sb.Capacity);
         return sb.ToString();
     }
 
-    private static string KlassenName(IntPtr hwnd)
+    private static string ClassName(IntPtr hwnd)
     {
         var sb = new StringBuilder(256);
         _ = Win32.GetClassName(hwnd, sb, sb.Capacity);
         return sb.ToString();
     }
 
-    private static void Verzoegert(int ms, Action aktion)
+    private static void Delay(int ms, Action action)
     {
         var t = new System.Windows.Forms.Timer { Interval = ms };
         t.Tick += (s, e) =>
         {
             t.Stop();
             t.Dispose();
-            aktion();
+            action();
         };
         t.Start();
     }
 
-    // ---- Speichern / Laden --------------------------------------------------
+    // ---- Persistence --------------------------------------------------------
 
-    private static Dictionary<string, Dictionary<string, Platzierung>> Laden()
+    private static Dictionary<string, Dictionary<string, Placement>> Load()
     {
         try
         {
-            if (File.Exists(DatenPfad))
+            if (File.Exists(DataPath))
             {
-                string text = File.ReadAllText(DatenPfad);
-                try
-                {
-                    var profile = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, Platzierung>>>(text);
-                    if (profile != null)
-                        return profile;
-                }
-                catch (JsonException)
-                {
-                    // altes einstufiges Format: unter dem aktuellen Profil übernehmen
-                    var alt = JsonSerializer.Deserialize<Dictionary<string, Platzierung>>(text);
-                    if (alt != null)
-                        return new Dictionary<string, Dictionary<string, Platzierung>> { [ProfilSchluessel()] = alt };
-                }
+                var profiles = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, Placement>>>(
+                    File.ReadAllText(DataPath));
+                if (profiles != null)
+                    return profiles;
             }
         }
         catch
         {
         }
-        return new Dictionary<string, Dictionary<string, Platzierung>>();
+        return new Dictionary<string, Dictionary<string, Placement>>();
     }
 
-    private void Speichern()
+    private void Save()
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(DatenPfad));
-            File.WriteAllText(DatenPfad,
-                JsonSerializer.Serialize(alleProfile, new JsonSerializerOptions { WriteIndented = true }));
+            Directory.CreateDirectory(Path.GetDirectoryName(DataPath));
+            File.WriteAllText(DataPath,
+                JsonSerializer.Serialize(profiles, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch
         {
         }
     }
 
-    // ---- Tray & Lebenszyklus ------------------------------------------------
+    // ---- Tray & lifecycle ---------------------------------------------------
 
-    private NotifyIcon TrayErstellen()
+    private NotifyIcon CreateTray()
     {
-        var menue = new ContextMenuStrip();
-        aktivEintrag = new ToolStripMenuItem("Automatik aktiv") { Checked = true, CheckOnClick = true };
-        aktivEintrag.CheckedChanged += (s, e) => aktiv = aktivEintrag.Checked;
-        var vergessen = new ToolStripMenuItem("Gemerkte Positionen löschen");
-        vergessen.Click += (s, e) =>
+        var menu = new ContextMenuStrip();
+        enabledItem = new ToolStripMenuItem("Automatic positioning") { Checked = true, CheckOnClick = true };
+        enabledItem.CheckedChanged += (s, e) => enabled = enabledItem.Checked;
+        var forget = new ToolStripMenuItem("Forget saved positions");
+        forget.Click += (s, e) =>
         {
-            gespeichert.Clear();
-            Speichern();
+            saved.Clear();
+            Save();
         };
-        var beenden = new ToolStripMenuItem("Beenden");
-        beenden.Click += (s, e) => ExitThread();
-        menue.Items.Add(aktivEintrag);
-        menue.Items.Add(vergessen);
-        menue.Items.Add(new ToolStripSeparator());
-        menue.Items.Add(beenden);
+        var exit = new ToolStripMenuItem("Exit");
+        exit.Click += (s, e) => ExitThread();
+        menu.Items.Add(enabledItem);
+        menu.Items.Add(forget);
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(exit);
         return new NotifyIcon
         {
-            Icon = LadeSymbol(),
-            Text = "WindowKeeper – Win+Umschalt+Z schaltet die Automatik um",
+            Icon = LoadTrayIcon(),
+            Text = "WindowKeeper – Win+Shift+Z toggles automatic positioning",
             Visible = true,
-            ContextMenuStrip = menue,
+            ContextMenuStrip = menu,
         };
     }
 
-    private static Icon LadeSymbol()
+    private static Icon LoadTrayIcon()
     {
         try
         {
@@ -501,59 +490,60 @@ internal sealed class MerkerKontext : ApplicationContext
         }
     }
 
-    private void Umschalten()
+    private void Toggle()
     {
-        aktivEintrag.Checked = !aktivEintrag.Checked; // setzt über CheckedChanged auch "aktiv"
-        tray.ShowBalloonTip(1500, "WindowKeeper", aktiv ? "Automatik aktiviert" : "Automatik deaktiviert", ToolTipIcon.Info);
+        enabledItem.Checked = !enabledItem.Checked; // also updates "enabled" via CheckedChanged
+        tray.ShowBalloonTip(1500, "WindowKeeper",
+            enabled ? "Automatic positioning enabled" : "Automatic positioning disabled", ToolTipIcon.Info);
     }
 
-    private void Aufraeumen()
+    private void Cleanup()
     {
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= BeiAnzeigeWechsel;
-        verfolgungsTimer.Stop();
-        foreach (var eintrag in verfolgt.Values)
-            gespeichert[eintrag.Schluessel] = eintrag.Letzte;
-        Speichern();
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+        trackingTimer.Stop();
+        foreach (var entry in tracked.Values)
+            saved[entry.Key] = entry.Last;
+        Save();
         tray.Visible = false;
         tray.Dispose();
-        hook.Freigeben();
+        hook.Release();
     }
 }
 
-// Unsichtbares Fenster, das Shell-Hook-Nachrichten und Hotkeys empfängt
-internal sealed class HookFenster : NativeWindow
+// Invisible window that receives shell hook messages and hotkeys
+internal sealed class HookWindow : NativeWindow
 {
-    private readonly uint shellNachricht;
-    private readonly Win32.WinEventDelegate winEventRueckruf; // Referenz halten, sonst räumt der GC den Delegaten ab
-    private readonly IntPtr bewegtHook;
+    private readonly uint shellMessage;
+    private readonly Win32.WinEventDelegate winEventCallback; // keep a reference so the GC doesn't collect the delegate
+    private readonly IntPtr moveHook;
 
-    public event Action<IntPtr> FensterErstellt;
-    public event Action<IntPtr> FensterZerstoert;
-    public event Action<IntPtr> FensterBewegt;
-    public event Action HotkeyUmschalten;
+    public event Action<IntPtr> WindowCreated;
+    public event Action<IntPtr> WindowDestroyed;
+    public event Action<IntPtr> WindowMoved;
+    public event Action HotkeyToggle;
 
-    public HookFenster()
+    public HookWindow()
     {
         CreateHandle(new CreateParams());
         Win32.RegisterShellHookWindow(Handle);
-        shellNachricht = Win32.RegisterWindowMessage("SHELLHOOK");
-        // Win+Z bleibt frei (dort liegen die Windows-Snap-Layouts);
-        // nur Win+Umschalt+Z zum Umschalten der Automatik
+        shellMessage = Win32.RegisterWindowMessage("SHELLHOOK");
+        // Win+Z stays free (Windows snap layouts live there);
+        // only Win+Shift+Z toggles automatic positioning
         Win32.RegisterHotKey(Handle, 2, Win32.MOD_WIN | Win32.MOD_SHIFT | Win32.MOD_NOREPEAT, Win32.VK_Z);
-        winEventRueckruf = BeiWinEvent;
-        bewegtHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
-            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
+        winEventCallback = OnWinEvent;
+        moveHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
+            IntPtr.Zero, winEventCallback, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
     }
 
-    private void BeiWinEvent(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit)
+    private void OnWinEvent(IntPtr hook, uint eventId, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
-        if (idObject == 0 && idChild == 0 && hwnd != IntPtr.Zero) // nur OBJID_WINDOW selbst
-            FensterBewegt?.Invoke(hwnd);
+        if (idObject == 0 && idChild == 0 && hwnd != IntPtr.Zero) // OBJID_WINDOW itself only
+            WindowMoved?.Invoke(hwnd);
     }
 
-    public void Freigeben()
+    public void Release()
     {
-        Win32.UnhookWinEvent(bewegtHook);
+        Win32.UnhookWinEvent(moveHook);
         Win32.UnregisterHotKey(Handle, 2);
         Win32.DeregisterShellHookWindow(Handle);
         DestroyHandle();
@@ -561,18 +551,18 @@ internal sealed class HookFenster : NativeWindow
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == shellNachricht)
+        if (m.Msg == shellMessage)
         {
-            long ereignis = (long)m.WParam & 0x7FFF;
-            if (ereignis == Win32.HSHELL_WINDOWCREATED)
-                FensterErstellt?.Invoke(m.LParam);
-            else if (ereignis == Win32.HSHELL_WINDOWDESTROYED)
-                FensterZerstoert?.Invoke(m.LParam);
+            long eventId = (long)m.WParam & 0x7FFF;
+            if (eventId == Win32.HSHELL_WINDOWCREATED)
+                WindowCreated?.Invoke(m.LParam);
+            else if (eventId == Win32.HSHELL_WINDOWDESTROYED)
+                WindowDestroyed?.Invoke(m.LParam);
         }
         else if (m.Msg == Win32.WM_HOTKEY)
         {
             if ((long)m.WParam == 2)
-                HotkeyUmschalten?.Invoke();
+                HotkeyToggle?.Invoke();
         }
         base.WndProc(ref m);
     }
@@ -603,7 +593,7 @@ internal static class Win32
     public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
 
-    public delegate void WinEventDelegate(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit);
+    public delegate void WinEventDelegate(IntPtr hook, uint eventId, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -627,7 +617,7 @@ internal static class Win32
         public POINT ptMaxPosition;
         public RECT rcNormalPosition;
 
-        public static WINDOWPLACEMENT Neu() => new() { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+        public static WINDOWPLACEMENT Create() => new() { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
     }
 
     [DllImport("user32.dll")] public static extern bool RegisterShellHookWindow(IntPtr hWnd);
@@ -647,7 +637,7 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
-    [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr modul, WinEventDelegate rueckruf, uint pid, uint tid, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr module, WinEventDelegate callback, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
     [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
 }
