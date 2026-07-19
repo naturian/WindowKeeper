@@ -3,6 +3,7 @@ namespace WindowKeeper;
 internal sealed class Settings
 {
     public bool Enabled { get; set; } = true;
+    public string Language { get; set; } = "auto"; // auto | en | de
     public int TopLeftThreshold { get; set; } = 350;
     public int MinLifetimeMs { get; set; } = 10_000;
     public int MaxAgeDays { get; set; } = 90;
@@ -45,6 +46,8 @@ internal sealed class Settings
 
     internal void Normalize()
     {
+        if (Language != "en" && Language != "de")
+            Language = "auto";
         TopLeftThreshold = Math.Clamp(TopLeftThreshold, 0, 5_000);
         MinLifetimeMs = Math.Clamp(MinLifetimeMs, 0, 3_600_000);
         MaxAgeDays = Math.Clamp(MaxAgeDays, 1, 3_650);

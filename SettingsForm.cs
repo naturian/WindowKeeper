@@ -5,9 +5,11 @@ namespace WindowKeeper;
 internal sealed class SettingsForm : Form
 {
     private static readonly string[] RuleModes = ["normal", "ignore", "center"];
+    private static readonly string[] LanguageCodes = ["auto", "en", "de"];
     private readonly Settings target;
     private readonly BindingList<WindowRule> rules;
-    private readonly CheckBox enabled = new() { Text = "Enable automatic positioning", AutoSize = true };
+    private readonly CheckBox enabled = new() { Text = Loc.T("Settings.Enable"), AutoSize = true };
+    private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly NumericUpDown topLeftThreshold = Number(0, 5_000, 10);
     private readonly NumericUpDown minimumLifetimeSeconds = Number(0, 3_600, 1);
     private readonly NumericUpDown maximumAgeDays = Number(1, 3_650, 1);
@@ -32,7 +34,7 @@ internal sealed class SettingsForm : Form
         target = settings;
         rules = new BindingList<WindowRule>(settings.Rules.Select(rule => rule.Copy()).ToList());
 
-        Text = "WindowKeeper settings";
+        Text = Loc.T("Settings.Title");
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 560);
         Size = new Size(860, 650);
@@ -40,6 +42,8 @@ internal sealed class SettingsForm : Form
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
 
         enabled.Checked = settings.Enabled;
+        language.Items.AddRange([Loc.T("Settings.LanguageAuto"), "English", "Deutsch"]);
+        language.SelectedIndex = Math.Max(0, Array.IndexOf(LanguageCodes, settings.Language));
         topLeftThreshold.Value = settings.TopLeftThreshold;
         minimumLifetimeSeconds.Value = settings.MinLifetimeMs / 1_000m;
         maximumAgeDays.Value = settings.MaxAgeDays;
@@ -52,8 +56,8 @@ internal sealed class SettingsForm : Form
 
         ConfigureRuleGrid();
         Controls.Add(BuildLayout());
-        AcceptButton = FindButton("Save");
-        CancelButton = FindButton("Cancel");
+        AcceptButton = FindButton(Loc.T("Common.Save"));
+        CancelButton = FindButton(Loc.T("Common.Cancel"));
     }
 
     private TableLayoutPanel BuildLayout()
@@ -70,7 +74,7 @@ internal sealed class SettingsForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var general = new GroupBox { Text = "General", Dock = DockStyle.Top, AutoSize = true };
+        var general = new GroupBox { Text = Loc.T("Settings.General"), Dock = DockStyle.Top, AutoSize = true };
         var generalGrid = new TableLayoutPanel
         {
             AutoSize = true,
@@ -83,10 +87,11 @@ internal sealed class SettingsForm : Form
         generalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         generalGrid.Controls.Add(enabled, 0, 0);
         generalGrid.SetColumnSpan(enabled, 3);
-        AddNumberRow(generalGrid, 1, "Top-left detection distance", topLeftThreshold, "pixels");
-        AddNumberRow(generalGrid, 2, "Ignore untouched windows shorter than", minimumLifetimeSeconds, "seconds");
-        AddNumberRow(generalGrid, 3, "Forget unused positions after", maximumAgeDays, "days");
-        AddNumberRow(generalGrid, 4, "Offset additional matching windows by", cascadeOffset, "pixels");
+        AddNumberRow(generalGrid, 1, Loc.T("Settings.Threshold"), topLeftThreshold, Loc.T("Settings.Pixels"));
+        AddNumberRow(generalGrid, 2, Loc.T("Settings.MinLifetime"), minimumLifetimeSeconds, Loc.T("Settings.Seconds"));
+        AddNumberRow(generalGrid, 3, Loc.T("Settings.MaxAge"), maximumAgeDays, Loc.T("Settings.Days"));
+        AddNumberRow(generalGrid, 4, Loc.T("Settings.Cascade"), cascadeOffset, Loc.T("Settings.Pixels"));
+        AddNumberRow(generalGrid, 5, Loc.T("Settings.Language"), language, "");
         general.Controls.Add(generalGrid);
 
         var picker = new TableLayoutPanel
@@ -99,21 +104,21 @@ internal sealed class SettingsForm : Form
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        picker.Controls.Add(new Label { Text = "Add an open application:", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        picker.Controls.Add(new Label { Text = Loc.T("Settings.AddOpen"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         picker.Controls.Add(openWindows, 1, 0);
-        var add = new Button { Text = "Add rule", AutoSize = true };
+        var add = new Button { Text = Loc.T("Settings.AddRule"), AutoSize = true };
         add.Click += (_, _) => AddSelectedWindow();
         picker.Controls.Add(add, 2, 0);
 
-        var rulesGroup = new GroupBox { Text = "Application rules", Dock = DockStyle.Fill };
+        var rulesGroup = new GroupBox { Text = Loc.T("Settings.Rules"), Dock = DockStyle.Fill };
         var rulesLayout = new TableLayoutPanel { ColumnCount = 1, RowCount = 2, Dock = DockStyle.Fill, Padding = new Padding(8) };
         rulesLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         rulesLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         rulesLayout.Controls.Add(ruleGrid, 0, 0);
         var ruleButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill };
-        var addManual = new Button { Text = "Add manually", AutoSize = true };
+        var addManual = new Button { Text = Loc.T("Settings.AddManual"), AutoSize = true };
         addManual.Click += (_, _) => rules.Add(new WindowRule());
-        var remove = new Button { Text = "Remove selected", AutoSize = true };
+        var remove = new Button { Text = Loc.T("Settings.RemoveSelected"), AutoSize = true };
         remove.Click += (_, _) => RemoveSelectedRule();
         ruleButtons.Controls.Add(addManual);
         ruleButtons.Controls.Add(remove);
@@ -127,8 +132,8 @@ internal sealed class SettingsForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(0, 10, 0, 0),
         };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
-        var save = new Button { Text = "Save", AutoSize = true };
+        var cancel = new Button { Text = Loc.T("Common.Cancel"), DialogResult = DialogResult.Cancel, AutoSize = true };
+        var save = new Button { Text = Loc.T("Common.Save"), AutoSize = true };
         save.Click += (_, _) => SaveAndClose();
         bottom.Controls.Add(cancel);
         bottom.Controls.Add(save);
@@ -145,27 +150,27 @@ internal sealed class SettingsForm : Form
         ruleGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             DataPropertyName = nameof(WindowRule.Process),
-            HeaderText = "Process",
+            HeaderText = Loc.T("Settings.ColProcess"),
             FillWeight = 120,
         });
         ruleGrid.Columns.Add(new DataGridViewComboBoxColumn
         {
             DataPropertyName = nameof(WindowRule.Mode),
             DataSource = RuleModes,
-            HeaderText = "Mode",
+            HeaderText = Loc.T("Settings.ColMode"),
             FillWeight = 75,
             FlatStyle = FlatStyle.Flat,
         });
         ruleGrid.Columns.Add(new DataGridViewCheckBoxColumn
         {
             DataPropertyName = nameof(WindowRule.IgnoreTitle),
-            HeaderText = "Share position",
+            HeaderText = Loc.T("Settings.ColShare"),
             FillWeight = 80,
         });
         ruleGrid.Columns.Add(new DataGridViewCheckBoxColumn
         {
             DataPropertyName = nameof(WindowRule.HashTitle),
-            HeaderText = "Hide titles",
+            HeaderText = Loc.T("Settings.ColHide"),
             FillWeight = 70,
         });
         ruleGrid.DataSource = rules;
@@ -203,12 +208,13 @@ internal sealed class SettingsForm : Form
         ruleGrid.EndEdit();
         if (rules.Any(rule => string.IsNullOrWhiteSpace(rule.Process)))
         {
-            MessageBox.Show("Every rule needs a process name.", "WindowKeeper",
+            MessageBox.Show(Loc.T("Settings.RuleNeedsProcess"), "WindowKeeper",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
         target.Enabled = enabled.Checked;
+        target.Language = LanguageCodes[Math.Max(0, language.SelectedIndex)];
         target.TopLeftThreshold = Decimal.ToInt32(topLeftThreshold.Value);
         target.MinLifetimeMs = Decimal.ToInt32(minimumLifetimeSeconds.Value * 1_000m);
         target.MaxAgeDays = Decimal.ToInt32(maximumAgeDays.Value);

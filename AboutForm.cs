@@ -5,13 +5,13 @@ namespace WindowKeeper;
 internal sealed class AboutForm : Form
 {
     private readonly string diagnostics;
-    private readonly Button checkUpdates = new() { Text = "Check for updates", AutoSize = true };
+    private readonly Button checkUpdates = new() { Text = Loc.T("About.CheckUpdates"), AutoSize = true };
     private readonly Label updateStatus = new() { AutoSize = true, Anchor = AnchorStyles.Left };
 
     public AboutForm(string diagnosticText)
     {
         diagnostics = diagnosticText;
-        Text = "About WindowKeeper";
+        Text = Loc.T("About.Title");
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -46,7 +46,7 @@ internal sealed class AboutForm : Form
         }, 0, 0);
         root.Controls.Add(new Label
         {
-            Text = "Remembers and restores Windows window positions. No telemetry is collected.",
+            Text = Loc.T("About.Tagline"),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12),
         }, 0, 1);
@@ -80,12 +80,12 @@ internal sealed class AboutForm : Form
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
         };
-        var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.OK };
-        var issues = new Button { Text = "Report a problem", AutoSize = true };
+        var close = new Button { Text = Loc.T("Common.Close"), AutoSize = true, DialogResult = DialogResult.OK };
+        var issues = new Button { Text = Loc.T("About.ReportProblem"), AutoSize = true };
         issues.Click += (_, _) => OpenUrl("https://github.com/naturian/WindowKeeper/issues/new");
-        var logs = new Button { Text = "Open logs", AutoSize = true };
+        var logs = new Button { Text = Loc.T("About.OpenLogs"), AutoSize = true };
         logs.Click += (_, _) => OpenLogs();
-        var copy = new Button { Text = "Copy diagnostics", AutoSize = true };
+        var copy = new Button { Text = Loc.T("About.CopyDiagnostics"), AutoSize = true };
         copy.Click += (_, _) => Clipboard.SetText(diagnostics);
         buttons.Controls.Add(close);
         buttons.Controls.Add(issues);
@@ -99,20 +99,20 @@ internal sealed class AboutForm : Form
     private async void CheckUpdatesClicked(object? sender, EventArgs e)
     {
         checkUpdates.Enabled = false;
-        updateStatus.Text = "Checking…";
+        updateStatus.Text = Loc.T("About.Checking");
         try
         {
             UpdateResult result = await UpdateChecker.CheckAsync();
             if (!result.Available)
             {
-                updateStatus.Text = "You are up to date.";
+                updateStatus.Text = Loc.T("About.UpToDate");
                 return;
             }
 
-            updateStatus.Text = $"Version {result.LatestVersion} is available.";
+            updateStatus.Text = Loc.F("About.UpdateAvailable", result.LatestVersion);
             if (MessageBox.Show(
-                $"WindowKeeper {result.LatestVersion} is available. Open the release page?",
-                "WindowKeeper update", MessageBoxButtons.YesNo,
+                Loc.F("About.UpdatePrompt", result.LatestVersion),
+                Loc.T("About.UpdateTitle"), MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information) == DialogResult.Yes)
             {
                 OpenUrl(result.ReleaseUrl);
@@ -121,7 +121,7 @@ internal sealed class AboutForm : Form
         catch (Exception ex)
         {
             AppLog.Error(ex);
-            updateStatus.Text = "Update check failed.";
+            updateStatus.Text = Loc.T("About.UpdateFailed");
         }
         finally
         {

@@ -84,6 +84,7 @@ edits are read the next time WindowKeeper starts:
 ```json
 {
   "Enabled": true,
+  "Language": "auto",
   "TopLeftThreshold": 350,
   "MinLifetimeMs": 10000,
   "MaxAgeDays": 90,
@@ -98,6 +99,9 @@ edits are read the next time WindowKeeper starts:
 ```
 
 - `Enabled` — persists the tray/hotkey toggle across restarts.
+- `Language` — UI language: `auto` (follow Windows), `en` or `de`. The tray
+  menu switches immediately when changed in the settings window; dialogs pick
+  up the language when they are reopened.
 - `TopLeftThreshold` — distance (px) from the top-left corner up to which a
   window counts as a "top-left opener" (centering fallback).
 - `MinLifetimeMs` — windows that close sooner and were never touched are not

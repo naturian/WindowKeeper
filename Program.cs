@@ -39,10 +39,7 @@ internal static class Program
 
     private static int UnknownArgument(string arg)
     {
-        MessageBox.Show($"Unknown argument: {arg}\r\n\r\nSupported arguments:\r\n" +
-             "--install     register and start the logon task\r\n" +
-             "--uninstall   stop WindowKeeper and remove the task\r\n" +
-             "--register-task / --unregister-task   installer integration",
+        MessageBox.Show(Loc.F("Args.Unknown", arg),
             "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Information);
         return 1;
     }
@@ -106,7 +103,7 @@ internal static class Installer
         catch (Exception ex)
         {
             AppLog.Error(ex);
-            MessageBox.Show("Installation failed:\r\n" + ex.Message,
+            MessageBox.Show(Loc.T("Install.Failed") + "\r\n" + ex.Message,
                 "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
@@ -137,7 +134,7 @@ internal static class Installer
         catch (Exception ex)
         {
             AppLog.Error(ex);
-            MessageBox.Show("Uninstall failed:\r\n" + ex.Message,
+            MessageBox.Show(Loc.T("Install.UninstallFailed") + "\r\n" + ex.Message,
                 "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }
@@ -327,6 +324,7 @@ internal sealed class KeeperContext : ApplicationContext
     public KeeperContext()
     {
         settings = Settings.Load();
+        Loc.Initialize(settings.Language);
         enabled = settings.Enabled;
         profiles = Load(settings.MaxAgeDays);
         activeProfile = ProfileKey();
@@ -895,26 +893,39 @@ internal sealed class KeeperContext : ApplicationContext
 
     private NotifyIcon CreateTray()
     {
+        var notifyIcon = new NotifyIcon
+        {
+            Icon = LoadTrayIcon(),
+            Text = Loc.T("Tray.Tooltip"),
+            Visible = true,
+            ContextMenuStrip = BuildTrayMenu(),
+        };
+        notifyIcon.DoubleClick += (_, _) => OpenSettings();
+        return notifyIcon;
+    }
+
+    private ContextMenuStrip BuildTrayMenu()
+    {
         var menu = new ContextMenuStrip();
-        var openSettings = new ToolStripMenuItem("Settings…");
+        var openSettings = new ToolStripMenuItem(Loc.T("Tray.Settings"));
         openSettings.Click += (_, _) => OpenSettings();
-        enabledItem = new ToolStripMenuItem("Automatic positioning") { Checked = enabled, CheckOnClick = true };
+        enabledItem = new ToolStripMenuItem(Loc.T("Tray.Enabled")) { Checked = enabled, CheckOnClick = true };
         enabledItem.CheckedChanged += (s, e) =>
         {
             enabled = enabledItem.Checked;
             settings.Enabled = enabled;
             settings.Save();
         };
-        var forgetCurrent = new ToolStripMenuItem("Forget positions for this display setup");
+        var forgetCurrent = new ToolStripMenuItem(Loc.T("Tray.ForgetCurrent"));
         forgetCurrent.Click += (s, e) =>
         {
             saved.Clear();
             Save();
         };
-        var forgetAll = new ToolStripMenuItem("Forget all saved positions");
+        var forgetAll = new ToolStripMenuItem(Loc.T("Tray.ForgetAll"));
         forgetAll.Click += (s, e) =>
         {
-            if (MessageBox.Show("Forget positions for every display setup?", "WindowKeeper",
+            if (MessageBox.Show(Loc.T("Tray.ForgetAllConfirm"), "WindowKeeper",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             {
                 return;
@@ -924,16 +935,16 @@ internal sealed class KeeperContext : ApplicationContext
             profiles[activeProfile] = saved;
             Save();
         };
-        var openData = new ToolStripMenuItem("Open data folder");
+        var openData = new ToolStripMenuItem(Loc.T("Tray.OpenData"));
         openData.Click += (s, e) =>
         {
             string dataDirectory = Path.GetDirectoryName(DataPath)!;
             Directory.CreateDirectory(dataDirectory);
             _ = Process.Start(new ProcessStartInfo(dataDirectory) { UseShellExecute = true });
         };
-        var about = new ToolStripMenuItem("About and diagnostics…");
+        var about = new ToolStripMenuItem(Loc.T("Tray.About"));
         about.Click += (_, _) => OpenAbout();
-        var exit = new ToolStripMenuItem("Exit");
+        var exit = new ToolStripMenuItem(Loc.T("Tray.Exit"));
         exit.Click += (s, e) => ExitThread();
         menu.Items.Add(openSettings);
         menu.Items.Add(new ToolStripSeparator());
@@ -944,15 +955,18 @@ internal sealed class KeeperContext : ApplicationContext
         menu.Items.Add(about);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
-        var notifyIcon = new NotifyIcon
-        {
-            Icon = LoadTrayIcon(),
-            Text = "WindowKeeper – Win+Shift+Z toggles automatic positioning",
-            Visible = true,
-            ContextMenuStrip = menu,
-        };
-        notifyIcon.DoubleClick += (_, _) => OpenSettings();
-        return notifyIcon;
+        return menu;
+    }
+
+    // Applies a changed UI language without restarting: the tray menu is the
+    // only long-lived surface, dialogs pick up strings when they are opened
+    private void RefreshTrayLanguage()
+    {
+        Loc.Initialize(settings.Language);
+        ContextMenuStrip? previous = tray.ContextMenuStrip;
+        tray.ContextMenuStrip = BuildTrayMenu();
+        tray.Text = Loc.T("Tray.Tooltip");
+        previous?.Dispose();
     }
 
     private void OpenSettings()
@@ -962,6 +976,7 @@ internal sealed class KeeperContext : ApplicationContext
             return;
 
         settings.Normalize();
+        RefreshTrayLanguage();
         enabled = settings.Enabled;
         enabledItem.Checked = enabled;
         Prune(profiles, settings.MaxAgeDays);
@@ -994,7 +1009,7 @@ internal sealed class KeeperContext : ApplicationContext
     {
         enabledItem.Checked = !enabledItem.Checked; // also updates "enabled" via CheckedChanged
         tray.ShowBalloonTip(1500, "WindowKeeper",
-            enabled ? "Automatic positioning enabled" : "Automatic positioning disabled", ToolTipIcon.Info);
+            Loc.T(enabled ? "Tray.BalloonEnabled" : "Tray.BalloonDisabled"), ToolTipIcon.Info);
     }
 
     private void Cleanup()
