@@ -189,29 +189,65 @@ internal sealed class TrackedWindow
     public bool UserMoved;     // set when an interactive move/resize ends
 }
 
+// Per-process rule from settings.json
+internal sealed class WindowRule
+{
+    public string Process { get; set; } = "";     // process name, without .exe
+    public string Mode { get; set; } = "normal";  // normal | ignore | center
+    public bool IgnoreTitle { get; set; }         // key becomes process|class| — useful
+                                                  // for apps with document titles
+}
+
+// User configuration, loaded once at startup from settings.json next to the
+// position store; a default file is written on first run
+internal sealed class Settings
+{
+    public int TopLeftThreshold { get; set; } = 350;
+    public int MinLifetimeMs { get; set; } = 10_000;
+    public int MaxAgeDays { get; set; } = 90;
+    public List<WindowRule> Rules { get; set; } = new();
+
+    private static readonly string SettingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "WindowKeeper", "settings.json");
+
+    public static Settings Load()
+    {
+        try
+        {
+            if (File.Exists(SettingsPath))
+                return JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath)) ?? new Settings();
+            var defaults = new Settings();
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath));
+            File.WriteAllText(SettingsPath,
+                JsonSerializer.Serialize(defaults, new JsonSerializerOptions { WriteIndented = true }));
+            return defaults;
+        }
+        catch
+        {
+            return new Settings();
+        }
+    }
+
+    public WindowRule RuleFor(string process) =>
+        Rules.FirstOrDefault(r => string.Equals(r.Process, process, StringComparison.OrdinalIgnoreCase));
+}
+
 internal sealed class KeeperContext : ApplicationContext
 {
-    // ===== Settings ==========================================================
-    // The top-left threshold decides which windows count as "opened in the
-    // top-left corner" (typical for Device Manager and other MMC/system
-    // tools that never manage their own position).
-    private const int TopLeftThreshold = 350;
     private const int FirstPassMs = 150;
     // Some programs (e.g. MMC) set their position only after the window has
     // been created — hence a second delayed pass.
     private const int SecondPassMs = 700;
     private const int TrackingIntervalMs = 4000;
-    // Positions of short-lived windows the user never touched (splash
-    // screens, transient dialogs) are not worth remembering.
-    private const int MinLifetimeMs = 10_000;
-    // Entries that have not been used for this long are pruned at startup.
-    private const int MaxAgeDays = 90;
-    // =========================================================================
+    // Threshold, minimum lifetime and entry expiry are user-configurable —
+    // see the Settings class and settings.json.
 
     private static readonly string DataPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "WindowKeeper", "positions.json");
 
+    private readonly Settings settings;
     private readonly HookWindow hook;
     private readonly NotifyIcon tray;
     private ToolStripMenuItem enabledItem;
@@ -226,7 +262,8 @@ internal sealed class KeeperContext : ApplicationContext
 
     public KeeperContext()
     {
-        profiles = Load();
+        settings = Settings.Load();
+        profiles = Load(settings.MaxAgeDays);
         activeProfile = ProfileKey();
         if (!profiles.TryGetValue(activeProfile, out saved))
         {
@@ -248,8 +285,44 @@ internal sealed class KeeperContext : ApplicationContext
 
         tray = CreateTray();
 
+        // windows that are already open when WindowKeeper starts (logon race,
+        // tool restart) should have their closing position saved as well
+        AdoptExistingWindows();
+
         Application.ApplicationExit += (s, e) => Cleanup();
     }
+
+    private void AdoptExistingWindows()
+    {
+        try
+        {
+            Win32.EnumWindows((hwnd, _) =>
+            {
+                try
+                {
+                    if (IsNormalWindow(hwnd))
+                    {
+                        string key = KeyFor(hwnd);
+                        var rule = settings.RuleFor(ProcessOf(key));
+                        if (!IsMode(rule, "ignore") && !IsMode(rule, "center"))
+                            Track(hwnd, key);
+                    }
+                }
+                catch
+                {
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch
+        {
+        }
+    }
+
+    private static string ProcessOf(string key) => key[..key.IndexOf('|')];
+
+    private static bool IsMode(WindowRule rule, string mode) =>
+        rule != null && string.Equals(rule.Mode, mode, StringComparison.OrdinalIgnoreCase);
 
     // ---- Profiles per monitor configuration ---------------------------------
 
@@ -306,14 +379,24 @@ internal sealed class KeeperContext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var work = Screen.FromHandle(hwnd).WorkingArea;
-            bool topLeft = r.Left - work.Left <= TopLeftThreshold && r.Top - work.Top <= TopLeftThreshold;
+            bool topLeft = r.Left - work.Left <= settings.TopLeftThreshold && r.Top - work.Top <= settings.TopLeftThreshold;
 
             // Saved positions apply everywhere — including windows that center
-            // themselves (colorcpl etc.) or open beyond the threshold
-            // (msinfo32). The title may still be generic at this point (MMC
-            // sets the console title later) — for top-left openers a unique
-            // process|class match resolves the target anyway.
+            // themselves or open beyond the threshold. The title may still be
+            // generic at this point (MMC sets the console title later) — for
+            // top-left openers a unique process|class match resolves the
+            // target anyway.
             string key = KeyFor(hwnd);
+            var rule = settings.RuleFor(ProcessOf(key));
+            if (IsMode(rule, "ignore"))
+                return;
+            if (IsMode(rule, "center"))
+            {
+                Win32.ShowWindow(hwnd, Win32.SW_HIDE);
+                Center(hwnd);
+                Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+                return; // always centered, never remembered
+            }
             Placement target = null;
             if (!saved.TryGetValue(key, out target) && topLeft)
             {
@@ -371,9 +454,17 @@ internal sealed class KeeperContext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var work = Screen.FromHandle(hwnd).WorkingArea;
-            bool topLeft = r.Left - work.Left <= TopLeftThreshold && r.Top - work.Top <= TopLeftThreshold;
+            bool topLeft = r.Left - work.Left <= settings.TopLeftThreshold && r.Top - work.Top <= settings.TopLeftThreshold;
 
             string key = KeyFor(hwnd);
+            var rule = settings.RuleFor(ProcessOf(key));
+            if (IsMode(rule, "ignore"))
+                return;
+            if (IsMode(rule, "center"))
+            {
+                Center(hwnd);
+                return;
+            }
             if (saved.TryGetValue(key, out var p) && IsVisibleOnAnyScreen(p))
             {
                 if (!AnotherWindowWithKey(hwnd, key))
@@ -455,7 +546,7 @@ internal sealed class KeeperContext : ApplicationContext
     private bool ShouldRemember(TrackedWindow entry) =>
         saved.ContainsKey(entry.Key)
         || entry.UserMoved
-        || Environment.TickCount64 - entry.OpenedAt >= MinLifetimeMs;
+        || Environment.TickCount64 - entry.OpenedAt >= settings.MinLifetimeMs;
 
     private void Remember(TrackedWindow entry)
     {
@@ -545,7 +636,7 @@ internal sealed class KeeperContext : ApplicationContext
         return WindowTitle(hwnd).Length > 0;
     }
 
-    private static string KeyFor(IntPtr hwnd)
+    private string KeyFor(IntPtr hwnd)
     {
         Win32.GetWindowThreadProcessId(hwnd, out uint pid);
         string process = "?";
@@ -557,7 +648,9 @@ internal sealed class KeeperContext : ApplicationContext
         catch
         {
         }
-        return process + "|" + ClassName(hwnd) + "|" + WindowTitle(hwnd);
+        var rule = settings.RuleFor(process);
+        string title = rule != null && rule.IgnoreTitle ? "" : WindowTitle(hwnd);
+        return process + "|" + ClassName(hwnd) + "|" + title;
     }
 
     private static Placement CurrentPlacement(IntPtr hwnd)
@@ -612,7 +705,7 @@ internal sealed class KeeperContext : ApplicationContext
 
     // ---- Persistence --------------------------------------------------------
 
-    private static Dictionary<string, Dictionary<string, Placement>> Load()
+    private static Dictionary<string, Dictionary<string, Placement>> Load(int maxAgeDays)
     {
         try
         {
@@ -622,7 +715,7 @@ internal sealed class KeeperContext : ApplicationContext
                     File.ReadAllText(DataPath));
                 if (profiles != null)
                 {
-                    Prune(profiles);
+                    Prune(profiles, maxAgeDays);
                     return profiles;
                 }
             }
@@ -635,9 +728,9 @@ internal sealed class KeeperContext : ApplicationContext
 
     // Drop entries that have not been used in a long time; entries from
     // files predating the LastUsed field get a fresh grace period.
-    private static void Prune(Dictionary<string, Dictionary<string, Placement>> profiles)
+    private static void Prune(Dictionary<string, Dictionary<string, Placement>> profiles, int maxAgeDays)
     {
-        var cutoff = DateTime.Now.AddDays(-MaxAgeDays);
+        var cutoff = DateTime.Now.AddDays(-maxAgeDays);
         foreach (var profile in profiles.Values)
         {
             foreach (var (key, p) in profile.ToList())
@@ -815,6 +908,7 @@ internal static class Win32
     public const uint WINEVENT_OUTOFCONTEXT = 0;
 
     public delegate void WinEventDelegate(IntPtr hook, uint eventId, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+    public delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -847,6 +941,7 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mod, uint vk);
     [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);

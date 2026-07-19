@@ -60,6 +60,37 @@ automatically by GitHub Actions on every version tag.
   positions, exit). The icon is generated with `tools/create-icon.ps1` and
   embedded into the executable as `icon.ico`.
 
+## Configuration
+
+`%APPDATA%\WindowKeeper\settings.json` is created on first run and read at
+startup (restart WindowKeeper after editing):
+
+```json
+{
+  "TopLeftThreshold": 350,
+  "MinLifetimeMs": 10000,
+  "MaxAgeDays": 90,
+  "Rules": [
+    { "Process": "firefox", "Mode": "ignore" },
+    { "Process": "notepad", "Mode": "center" },
+    { "Process": "Code", "IgnoreTitle": true }
+  ]
+}
+```
+
+- `TopLeftThreshold` — distance (px) from the top-left corner up to which a
+  window counts as a "top-left opener" (centering fallback).
+- `MinLifetimeMs` — windows that close sooner and were never touched are not
+  remembered (filters splash screens).
+- `MaxAgeDays` — entries unused for this long are pruned at startup.
+- `Rules` — per-process overrides (`Process` is the process name without
+  `.exe`, matched case-insensitively):
+  - `"Mode": "ignore"` — never touch and never remember this process.
+  - `"Mode": "center"` — always center its windows, never remember them.
+  - `"IgnoreTitle": true` — build the position key without the window title;
+    useful for apps whose titles change with the open document (browsers,
+    editors), so all their windows share one remembered position.
+
 ## How it works
 
 - An invisible window receives the shell messages
