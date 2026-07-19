@@ -1,14 +1,14 @@
 # Richtet die geplante Aufgabe "WindowKeeper" ein (bei Anmeldung, höchste
 # Privilegien — nötig, weil z. B. der Geräte-Manager erhöht läuft und UIPI
-# sonst das Verschieben seiner Fenster blockiert) und entfernt die alte
-# AutoHotkey-Lösung ("FensterZentrieren").
+# sonst das Verschieben seiner Fenster blockiert).
 $ErrorActionPreference = 'Stop'
 
 $exe = "$env:USERPROFILE\Documents\WindowKeeper\publish\WindowKeeper.exe"
 
-# Alte AutoHotkey-Lösung entfernen
-Unregister-ScheduledTask -TaskName 'FensterZentrieren' -Confirm:$false -ErrorAction SilentlyContinue
-Get-Process AutoHotkey64 -ErrorAction SilentlyContinue | Stop-Process -Force
+# Aufgaben früherer Namen entfernen
+'FensterZentrieren', 'FensterMerker' | ForEach-Object {
+    Unregister-ScheduledTask -TaskName $_ -Confirm:$false -ErrorAction SilentlyContinue
+}
 
 $action    = New-ScheduledTaskAction -Execute $exe
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
