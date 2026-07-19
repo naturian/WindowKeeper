@@ -70,8 +70,6 @@ internal sealed class MerkerKontext : ApplicationContext
     private readonly System.Windows.Forms.Timer verfolgungsTimer;
     private readonly Dictionary<string, Platzierung> gespeichert;
     private readonly Dictionary<IntPtr, (string Schluessel, Platzierung Letzte)> verfolgt = new();
-    private readonly HashSet<IntPtr> vorabPositioniert = new();
-    private readonly Dictionary<IntPtr, (Platzierung Ziel, int Uebrig)> vorabKorrektur = new();
     private bool aktiv = true;
 
     public MerkerKontext()
@@ -79,9 +77,6 @@ internal sealed class MerkerKontext : ApplicationContext
         gespeichert = Laden();
 
         hook = new HookFenster();
-        hook.FensterAngelegt += FruehPositionieren;
-        hook.FensterGezeigt += FensterGezeigt;
-        hook.FensterOrtGeaendert += FensterOrtGeaendert;
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
         hook.FensterBewegt += FensterBewegt;
@@ -98,22 +93,26 @@ internal sealed class MerkerKontext : ApplicationContext
 
     // ---- Reaktion auf neue Fenster -----------------------------------------
 
-    // Wird bei EVENT_OBJECT_CREATE aufgerufen, solange das Fenster noch
-    // unsichtbar ist: Zielposition schon jetzt setzen, damit die
-    // Öffnungsanimation dort abläuft statt oben links. Der Titel wird oft
-    // erst kurz nach der Erstellung gesetzt, daher kurze Wiederholungen.
-    private void FruehPositionieren(IntPtr hwnd)
+    private void NeuesFenster(IntPtr hwnd)
     {
         if (!aktiv)
             return;
+        // sofort: das Fenster ist gerade erst sichtbar geworden — Verstecken,
+        // Positionieren und Neu-Anzeigen lässt die Öffnungsanimation an der
+        // Zielposition ablaufen statt oben links
+        SofortKorrigieren(hwnd);
+        // verzögerte Durchläufe als Sicherheitsnetz (MMC positioniert nach)
+        Verzoegert(ErsterDurchlaufMs, () => FensterPruefen(hwnd));
+        Verzoegert(ZweiterDurchlaufMs, () => FensterPruefen(hwnd));
+    }
+
+    private void SofortKorrigieren(IntPtr hwnd)
+    {
         try
         {
-            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd))
-                return; // schon sichtbar -> die normale Prüfung übernimmt
-            long stil = Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE).ToInt64();
-            if ((stil & Win32.WS_CHILD) != 0 || (stil & Win32.WS_CAPTION) != Win32.WS_CAPTION)
+            if (!IstNormalesFenster(hwnd))
                 return;
-            if ((Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64() & Win32.WS_EX_TOOLWINDOW) != 0)
+            if (Win32.IsIconic(hwnd) || Win32.IsZoomed(hwnd))
                 return;
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
@@ -121,152 +120,36 @@ internal sealed class MerkerKontext : ApplicationContext
             if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
                 return;
 
-            // SetWindowPos zeigt/versteckt nichts — sicher, selbst wenn das
-            // Fenster zwischen Prüfung und Aufruf sichtbar geworden ist
-            var gemerkt = GemerktesZiel(hwnd);
-            if (gemerkt != null)
+            // Der Titel kann hier noch der generische sein (MMC setzt den
+            // Konsolentitel u. U. erst später) — dann hilft die eindeutige
+            // Zuordnung über Prozess|Klasse; bei Mehrdeutigkeit übernehmen
+            // die verzögerten Durchläufe
+            string schluessel = SchluesselFuer(hwnd);
+            Platzierung ziel = null;
+            if (!gespeichert.TryGetValue(schluessel, out ziel))
             {
-                Win32.SetWindowPos(hwnd, IntPtr.Zero, gemerkt.X, gemerkt.Y, gemerkt.Breite, gemerkt.Hoehe,
-                    Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-                vorabKorrektur[hwnd] = (gemerkt, 5);
+                string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
+                var passende = gespeichert
+                    .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
+                    .Take(2).ToList();
+                if (passende.Count > 1)
+                    return; // mehrdeutig -> nicht raten
+                ziel = passende.Count == 1 ? passende[0].Value : null;
             }
-            else
-            {
-                // Ziel (noch) nicht auflösbar oder unbekannt: vorerst nur
-                // zentrieren; die Auflösung versucht es gleich erneut, denn
-                // der endgültige Titel wird oft erst später gesetzt
-                int b = r.Right - r.Left, h = r.Bottom - r.Top;
-                Win32.SetWindowPos(hwnd, IntPtr.Zero,
-                    arbeit.Left + (arbeit.Width - b) / 2, arbeit.Top + (arbeit.Height - h) / 2, 0, 0,
-                    Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-                vorabKorrektur[hwnd] = (null, 5);
-                Verzoegert(25, () => FruehAufloesen(hwnd, 1));
-            }
-            vorabPositioniert.Add(hwnd);
-        }
-        catch
-        {
-        }
-    }
+            if (ziel != null && (ziel.Maximiert || !IstSichtbar(ziel)))
+                return; // Maximieren übernimmt der verzögerte Durchlauf
 
-    // Gemerkte Platzierung zum Fenster: erst voller Schlüssel, sonst über
-    // Prozess|Klasse, wenn genau ein Eintrag passt (der Titel stimmt beim
-    // Erstellen oft noch nicht — MMC trägt anfangs den generischen Titel)
-    private Platzierung GemerktesZiel(IntPtr hwnd)
-    {
-        string schluessel = SchluesselFuer(hwnd);
-        if (!gespeichert.TryGetValue(schluessel, out var p))
-        {
-            string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
-            var passende = gespeichert
-                .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
-                .Take(2).ToList();
-            p = passende.Count == 1 ? passende[0].Value : null;
-        }
-        if (p == null || p.Maximiert || !IstSichtbar(p))
-            return null; // Maximieren übernimmt die normale Prüfung
-        return p;
-    }
-
-    // Solange das Fenster unsichtbar ist, weiter versuchen, das Ziel über den
-    // (inzwischen vielleicht endgültigen) Titel aufzulösen
-    private void FruehAufloesen(IntPtr hwnd, int versuch)
-    {
-        try
-        {
-            if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag) || eintrag.Ziel != null)
-                return;
-            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd))
-                return; // beim Anzeigen übernimmt FensterGezeigt
-            var gemerkt = GemerktesZiel(hwnd);
-            if (gemerkt != null)
-            {
-                Win32.SetWindowPos(hwnd, IntPtr.Zero, gemerkt.X, gemerkt.Y, gemerkt.Breite, gemerkt.Hoehe,
-                    Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-                vorabKorrektur[hwnd] = (gemerkt, eintrag.Uebrig);
-            }
-            else if (versuch < 12)
-            {
-                Verzoegert(25, () => FruehAufloesen(hwnd, versuch + 1));
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    // Manche Programme (MMC) verschieben ihr Fenster und zeigen es im selben
-    // Zug an — dieser Wettlauf ist mit asynchronen WinEvents nicht zu gewinnen.
-    // Wird ein vorpositioniertes Fenster an der falschen Stelle sichtbar,
-    // verstecken wir es sofort, setzen es ans Ziel und zeigen es erneut:
-    // die Öffnungsanimation läuft dann am Ziel ab.
-    private void FensterGezeigt(IntPtr hwnd)
-    {
-        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag))
-            return;
-        try
-        {
-            if (!Win32.IsWindow(hwnd) || eintrag.Uebrig <= 0)
-            {
-                vorabKorrektur.Remove(hwnd);
-                return;
-            }
-            // beim Anzeigen ist der endgültige Titel gesetzt — Ziel neu auflösen
-            var ziel = GemerktesZiel(hwnd) ?? eintrag.Ziel;
-            if (ziel == null)
-            {
-                // Titel noch nicht endgültig? Gleich noch einmal versuchen.
-                vorabKorrektur[hwnd] = (null, eintrag.Uebrig - 1);
-                Verzoegert(40, () => FensterGezeigt(hwnd));
-                return;
-            }
-            if (Win32.GetWindowRect(hwnd, out var r) && r.Left == ziel.X && r.Top == ziel.Y)
-            {
-                vorabKorrektur.Remove(hwnd); // am Ziel sichtbar geworden -> fertig
-                return;
-            }
-            vorabKorrektur[hwnd] = (ziel, eintrag.Uebrig - 1);
             Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-            Win32.SetWindowPos(hwnd, IntPtr.Zero, ziel.X, ziel.Y, ziel.Breite, ziel.Hoehe,
-                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+            if (ziel != null)
+                Anwenden(hwnd, ziel);
+            else
+                Zentrieren(hwnd);
             Win32.ShowWindow(hwnd, Win32.SW_SHOW);
+            Verfolgen(hwnd, schluessel);
         }
         catch
         {
         }
-    }
-
-    // Solange ein vorpositioniertes Fenster unsichtbar ist, wird jede
-    // Eigenbewegung der App sofort ans Ziel zurückkorrigiert; mit dem ersten
-    // Anzeigen endet die Überwachung
-    private void FensterOrtGeaendert(IntPtr hwnd)
-    {
-        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag) || eintrag.Ziel == null)
-            return;
-        try
-        {
-            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd) || eintrag.Uebrig <= 0)
-                return; // sichtbar -> FensterGezeigt übernimmt bzw. hat übernommen
-            if (!Win32.GetWindowRect(hwnd, out var r))
-                return;
-            if (r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
-                return; // steht am Ziel (auch nach unserem eigenen SetWindowPos)
-            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Uebrig - 1);
-            Win32.SetWindowPos(hwnd, IntPtr.Zero,
-                eintrag.Ziel.X, eintrag.Ziel.Y, eintrag.Ziel.Breite, eintrag.Ziel.Hoehe,
-                Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-        }
-        catch
-        {
-        }
-    }
-
-    private void NeuesFenster(IntPtr hwnd)
-    {
-        if (!aktiv)
-            return;
-        Verzoegert(ErsterDurchlaufMs, () => FensterPruefen(hwnd));
-        Verzoegert(ZweiterDurchlaufMs, () => FensterPruefen(hwnd));
     }
 
     private void FensterPruefen(IntPtr hwnd)
@@ -282,10 +165,7 @@ internal sealed class MerkerKontext : ApplicationContext
             if (!Win32.GetWindowRect(hwnd, out var r))
                 return;
             var arbeit = Screen.FromHandle(hwnd).WorkingArea;
-            // vorab positionierte Fenster stehen schon am Ziel, brauchen aber
-            // trotzdem die Verfolgung; alle anderen nur, wenn sie oben links öffnen
-            if (!vorabPositioniert.Contains(hwnd)
-                && (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle))
+            if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
                 return; // öffnet nicht oben links -> in Ruhe lassen
 
             string schluessel = SchluesselFuer(hwnd);
@@ -302,8 +182,6 @@ internal sealed class MerkerKontext : ApplicationContext
 
     private void FensterGeschlossen(IntPtr hwnd)
     {
-        vorabPositioniert.Remove(hwnd); // Handles werden wiederverwendet
-        vorabKorrektur.Remove(hwnd);
         if (verfolgt.Remove(hwnd, out var eintrag))
         {
             gespeichert[eintrag.Schluessel] = eintrag.Letzte;
@@ -559,14 +437,8 @@ internal sealed class HookFenster : NativeWindow
     private readonly uint shellNachricht;
     private readonly Win32.WinEventDelegate winEventRueckruf; // Referenz halten, sonst räumt der GC den Delegaten ab
     private readonly IntPtr bewegtHook;
-    private readonly IntPtr erstelltHook;
-    private readonly IntPtr gezeigtHook;
-    private readonly IntPtr ortHook;
 
     public event Action<IntPtr> FensterErstellt;
-    public event Action<IntPtr> FensterAngelegt;
-    public event Action<IntPtr> FensterGezeigt;
-    public event Action<IntPtr> FensterOrtGeaendert;
     public event Action<IntPtr> FensterZerstoert;
     public event Action<IntPtr> FensterBewegt;
     public event Action HotkeyUmschalten;
@@ -582,43 +454,16 @@ internal sealed class HookFenster : NativeWindow
         winEventRueckruf = BeiWinEvent;
         bewegtHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
             IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
-        // EVENT_OBJECT_CREATE kommt, bevor das Fenster sichtbar wird — nur so
-        // lässt es sich vor der Öffnungsanimation an die Zielposition setzen.
-        // SHOW und LOCATIONCHANGE steuern den Vorab-Wächter.
-        erstelltHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_CREATE, Win32.EVENT_OBJECT_CREATE,
-            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
-        gezeigtHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_SHOW, Win32.EVENT_OBJECT_SHOW,
-            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
-        ortHook = Win32.SetWinEventHook(Win32.EVENT_OBJECT_LOCATIONCHANGE, Win32.EVENT_OBJECT_LOCATIONCHANGE,
-            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
     }
 
     private void BeiWinEvent(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit)
     {
-        if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) // nur OBJID_WINDOW selbst
-            return;
-        switch (ereignis)
-        {
-            case Win32.EVENT_OBJECT_CREATE:
-                FensterAngelegt?.Invoke(hwnd);
-                break;
-            case Win32.EVENT_OBJECT_SHOW:
-                FensterGezeigt?.Invoke(hwnd);
-                break;
-            case Win32.EVENT_OBJECT_LOCATIONCHANGE:
-                FensterOrtGeaendert?.Invoke(hwnd);
-                break;
-            default:
-                FensterBewegt?.Invoke(hwnd);
-                break;
-        }
+        if (idObject == 0 && idChild == 0 && hwnd != IntPtr.Zero) // nur OBJID_WINDOW selbst
+            FensterBewegt?.Invoke(hwnd);
     }
 
     public void Freigeben()
     {
-        Win32.UnhookWinEvent(ortHook);
-        Win32.UnhookWinEvent(gezeigtHook);
-        Win32.UnhookWinEvent(erstelltHook);
         Win32.UnhookWinEvent(bewegtHook);
         Win32.UnregisterHotKey(Handle, 2);
         Win32.DeregisterShellHookWindow(Handle);
@@ -667,11 +512,7 @@ internal static class Win32
     public const int SW_SHOWMAXIMIZED = 3;
     public const int WPF_RESTORETOMAXIMIZED = 0x2;
     public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
-    public const uint EVENT_OBJECT_CREATE = 0x8000;
-    public const uint EVENT_OBJECT_SHOW = 0x8002;
-    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     public const uint WINEVENT_OUTOFCONTEXT = 0;
-    public const long WS_CHILD = 0x40000000;
 
     public delegate void WinEventDelegate(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit);
 
