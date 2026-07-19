@@ -2,3 +2,4 @@ bin/
 obj/
 publish/
 setup-ergebnis.txt
+.claude/

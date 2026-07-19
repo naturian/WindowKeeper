@@ -12,15 +12,13 @@ zu öffnen (z. B. Geräte-Manager und andere MMC-/System-Tools):
 - Fenster, die nicht oben links aufgehen (Programme, die ihre Position selbst
   verwalten), werden **nicht angefasst**.
 
-## Hotkeys
+## Bedienung
 
-| Hotkey | Funktion |
-|---|---|
-| `Win+Z` | Aktives Fenster zentrieren |
-| `Win+Umschalt+Z` | Automatik ein-/ausschalten |
-
-Dazu gibt es ein Tray-Symbol mit Menü (Automatik umschalten, gemerkte
-Positionen löschen, Beenden).
+- `Win+Umschalt+Z` schaltet die Automatik ein/aus. (`Win+Z` bleibt absichtlich
+  frei — dort liegen die Snap-Layouts von Windows.)
+- Tray-Symbol mit Menü (Automatik umschalten, gemerkte Positionen löschen,
+  Beenden). Das Icon wird mit `tools/erzeuge-icon.ps1` generiert und ist als
+  `icon.ico` in die Exe eingebettet.
 
 ## Funktionsweise
 

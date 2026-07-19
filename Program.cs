@@ -62,7 +62,6 @@ internal sealed class MerkerKontext : ApplicationContext
         hook = new HookFenster();
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
-        hook.HotkeyZentrieren += () => Zentrieren(Win32.GetForegroundWindow());
         hook.HotkeyUmschalten += Umschalten;
 
         verfolgungsTimer = new System.Windows.Forms.Timer { Interval = VerfolgungsIntervallMs };
@@ -313,11 +312,23 @@ internal sealed class MerkerKontext : ApplicationContext
         menue.Items.Add(beenden);
         return new NotifyIcon
         {
-            Icon = SystemIcons.Application,
-            Text = "FensterMerker – Win+Z zentriert, Win+Umschalt+Z schaltet um",
+            Icon = LadeSymbol(),
+            Text = "FensterMerker – Win+Umschalt+Z schaltet die Automatik um",
             Visible = true,
             ContextMenuStrip = menue,
         };
+    }
+
+    private static Icon LadeSymbol()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? SystemIcons.Application;
+        }
+        catch
+        {
+            return SystemIcons.Application;
+        }
     }
 
     private void Umschalten()
@@ -345,7 +356,6 @@ internal sealed class HookFenster : NativeWindow
 
     public event Action<IntPtr> FensterErstellt;
     public event Action<IntPtr> FensterZerstoert;
-    public event Action HotkeyZentrieren;
     public event Action HotkeyUmschalten;
 
     public HookFenster()
@@ -353,13 +363,13 @@ internal sealed class HookFenster : NativeWindow
         CreateHandle(new CreateParams());
         Win32.RegisterShellHookWindow(Handle);
         shellNachricht = Win32.RegisterWindowMessage("SHELLHOOK");
-        Win32.RegisterHotKey(Handle, 1, Win32.MOD_WIN | Win32.MOD_NOREPEAT, Win32.VK_Z);
+        // Win+Z bleibt frei (dort liegen die Windows-Snap-Layouts);
+        // nur Win+Umschalt+Z zum Umschalten der Automatik
         Win32.RegisterHotKey(Handle, 2, Win32.MOD_WIN | Win32.MOD_SHIFT | Win32.MOD_NOREPEAT, Win32.VK_Z);
     }
 
     public void Freigeben()
     {
-        Win32.UnregisterHotKey(Handle, 1);
         Win32.UnregisterHotKey(Handle, 2);
         Win32.DeregisterShellHookWindow(Handle);
         DestroyHandle();
@@ -377,10 +387,7 @@ internal sealed class HookFenster : NativeWindow
         }
         else if (m.Msg == Win32.WM_HOTKEY)
         {
-            long id = (long)m.WParam;
-            if (id == 1)
-                HotkeyZentrieren?.Invoke();
-            else if (id == 2)
+            if ((long)m.WParam == 2)
                 HotkeyUmschalten?.Invoke();
         }
         base.WndProc(ref m);
@@ -442,7 +449,6 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int index);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder sb, int max);
