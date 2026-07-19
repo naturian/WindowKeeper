@@ -8,11 +8,21 @@ namespace WindowKeeper;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
+        if (args.Length > 0)
+        {
+            return args[0].ToLowerInvariant() switch
+            {
+                "--install" => Installer.Install(),
+                "--uninstall" => Installer.Uninstall(),
+                _ => UnknownArgument(args[0]),
+            };
+        }
+
         using var singleInstance = new Mutex(true, "WindowKeeper_SingleInstance", out bool first);
         if (!first)
-            return;
+            return 0;
         // Log errors instead of crashing — a background utility must not die
         // because of a single misbehaving window
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -21,6 +31,16 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.Run(new KeeperContext());
+        return 0;
+    }
+
+    private static int UnknownArgument(string arg)
+    {
+        MessageBox.Show($"Unknown argument: {arg}\r\n\r\nSupported arguments:\r\n" +
+            "--install     register and start the logon task\r\n" +
+            "--uninstall   stop WindowKeeper and remove the task",
+            "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return 1;
     }
 
     private static void LogError(object error)
@@ -32,6 +52,119 @@ internal static class Program
         }
         catch
         {
+        }
+    }
+}
+
+// Self-installation: registers a scheduled task that starts WindowKeeper at
+// logon with highest privileges. Elevated rights are required because e.g.
+// Device Manager auto-elevates, and UIPI would otherwise block moving its
+// windows. Success is silent — the appearing tray icon is the feedback.
+internal static class Installer
+{
+    private const string TaskName = "WindowKeeper";
+
+    public static int Install()
+    {
+        if (!IsElevated())
+            return RelaunchElevated("--install");
+        try
+        {
+            dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            service.Connect();
+            dynamic folder = service.GetFolder("\\");
+            dynamic definition = service.NewTask(0);
+            definition.RegistrationInfo.Description = "Restores windows to the position they were last closed at.";
+            definition.Principal.RunLevel = 1;                    // TASK_RUNLEVEL_HIGHEST
+            definition.Settings.DisallowStartIfOnBatteries = false;
+            definition.Settings.StopIfGoingOnBatteries = false;
+            definition.Settings.ExecutionTimeLimit = "PT0S";      // no time limit
+            dynamic trigger = definition.Triggers.Create(9);      // TASK_TRIGGER_LOGON
+            trigger.UserId = Environment.UserDomainName + "\\" + Environment.UserName;
+            dynamic action = definition.Actions.Create(0);        // TASK_ACTION_EXEC
+            action.Path = Application.ExecutablePath;
+            folder.RegisterTaskDefinition(TaskName, definition,
+                6 /* TASK_CREATE_OR_UPDATE */, null, null, 3 /* TASK_LOGON_INTERACTIVE_TOKEN */, null);
+            folder.GetTask("\\" + TaskName).Run(null);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Installation failed:\r\n" + ex.Message,
+                "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    public static int Uninstall()
+    {
+        if (!IsElevated())
+            return RelaunchElevated("--uninstall");
+        try
+        {
+            dynamic service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            service.Connect();
+            dynamic folder = service.GetFolder("\\");
+            try
+            {
+                folder.GetTask("\\" + TaskName).Stop(0);
+            }
+            catch
+            {
+            }
+            try
+            {
+                folder.DeleteTask(TaskName, 0);
+            }
+            catch
+            {
+            }
+            foreach (var process in Process.GetProcessesByName("WindowKeeper"))
+            {
+                if (process.Id != Environment.ProcessId)
+                {
+                    try
+                    {
+                        process.Kill();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("Uninstall failed:\r\n" + ex.Message,
+                "WindowKeeper", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 1;
+        }
+    }
+
+    private static bool IsElevated()
+    {
+        using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(identity)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+    }
+
+    private static int RelaunchElevated(string argument)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = Application.ExecutablePath,
+                Arguments = argument,
+                UseShellExecute = true,
+                Verb = "runas", // UAC prompt
+            });
+            return 0;
+        }
+        catch
+        {
+            return 1; // elevation declined
         }
     }
 }

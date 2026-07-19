@@ -51,13 +51,17 @@ corner (e.g. Device Manager and other MMC/system tools):
 
 ```powershell
 dotnet publish -c Release -o publish
-powershell -ExecutionPolicy Bypass -File .\Setup-Task.ps1   # as administrator
+.\publish\WindowKeeper.exe --install
 ```
 
-`Setup-Task.ps1` registers the **WindowKeeper** scheduled task (run at
-logon, highest privileges). Elevated rights are required because e.g.
-Device Manager auto-elevates, and Windows (UIPI) forbids normal processes
-from moving windows of elevated ones.
+`--install` prompts for elevation once and registers the **WindowKeeper**
+scheduled task (run at logon, highest privileges) pointing at the
+executable's own location — the folder can live anywhere. Elevated rights
+are required because e.g. Device Manager auto-elevates, and Windows (UIPI)
+forbids normal processes from moving windows of elevated ones. Success is
+silent; the appearing tray icon is the feedback.
+
+`--uninstall` stops WindowKeeper and removes the scheduled task.
 
 Requires the .NET 9 Desktop Runtime (the published build is
 framework-dependent).
