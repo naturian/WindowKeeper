@@ -1,7 +1,7 @@
 Add-Type -AssemblyName System.Drawing
 $ErrorActionPreference = 'Stop'
 
-$zielDatei = "$env:USERPROFILE\Documents\FensterMerker\icon.ico"
+$zielDatei = "$env:USERPROFILE\Documents\WindowKeeper\icon.ico"
 $groessen = 16, 20, 24, 32, 48, 64, 128, 256
 $pngs = @()
 

@@ -7,8 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
-    <AssemblyName>FensterMerker</AssemblyName>
-    <RootNamespace>FensterMerker</RootNamespace>
+    <AssemblyName>WindowKeeper</AssemblyName>
+    <RootNamespace>WindowKeeper</RootNamespace>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Version>1.2.0</Version>
   </PropertyGroup>

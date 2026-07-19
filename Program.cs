@@ -3,14 +3,14 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
-namespace FensterMerker;
+namespace WindowKeeper;
 
 internal static class Programm
 {
     [STAThread]
     private static void Main()
     {
-        using var einzelinstanz = new Mutex(true, "FensterMerker_EinzelInstanz", out bool erste);
+        using var einzelinstanz = new Mutex(true, "WindowKeeper_EinzelInstanz", out bool erste);
         if (!erste)
             return;
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
@@ -45,7 +45,7 @@ internal sealed class MerkerKontext : ApplicationContext
 
     private static readonly string DatenPfad = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "FensterMerker", "positionen.json");
+        "WindowKeeper", "positionen.json");
 
     private readonly HookFenster hook;
     private readonly NotifyIcon tray;
@@ -327,7 +327,7 @@ internal sealed class MerkerKontext : ApplicationContext
         return new NotifyIcon
         {
             Icon = LadeSymbol(),
-            Text = "FensterMerker – Win+Umschalt+Z schaltet die Automatik um",
+            Text = "WindowKeeper – Win+Umschalt+Z schaltet die Automatik um",
             Visible = true,
             ContextMenuStrip = menue,
         };
@@ -348,7 +348,7 @@ internal sealed class MerkerKontext : ApplicationContext
     private void Umschalten()
     {
         aktivEintrag.Checked = !aktivEintrag.Checked; // setzt über CheckedChanged auch "aktiv"
-        tray.ShowBalloonTip(1500, "FensterMerker", aktiv ? "Automatik aktiviert" : "Automatik deaktiviert", ToolTipIcon.Info);
+        tray.ShowBalloonTip(1500, "WindowKeeper", aktiv ? "Automatik aktiviert" : "Automatik deaktiviert", ToolTipIcon.Info);
     }
 
     private void Aufraeumen()
