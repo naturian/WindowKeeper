@@ -62,6 +62,7 @@ internal sealed class MerkerKontext : ApplicationContext
         hook = new HookFenster();
         hook.FensterErstellt += NeuesFenster;
         hook.FensterZerstoert += FensterGeschlossen;
+        hook.FensterBewegt += FensterBewegt;
         hook.HotkeyUmschalten += Umschalten;
 
         verfolgungsTimer = new System.Windows.Forms.Timer { Interval = VerfolgungsIntervallMs };
@@ -121,6 +122,19 @@ internal sealed class MerkerKontext : ApplicationContext
     }
 
     // ---- Positionen verfolgen ----------------------------------------------
+
+    // Sofort beim Ende eines Verschiebens/Vergrößerns aktualisieren — sonst
+    // ginge die neue Position verloren, wenn das Fenster schneller geschlossen
+    // wird, als der Timer abtastet
+    private void FensterBewegt(IntPtr hwnd)
+    {
+        if (verfolgt.TryGetValue(hwnd, out var eintrag))
+        {
+            var p = AktuellePlatzierung(hwnd);
+            if (p != null)
+                verfolgt[hwnd] = (eintrag.Schluessel, p);
+        }
+    }
 
     private void Verfolgen(IntPtr hwnd, string schluessel)
     {
@@ -353,9 +367,12 @@ internal sealed class MerkerKontext : ApplicationContext
 internal sealed class HookFenster : NativeWindow
 {
     private readonly uint shellNachricht;
+    private readonly Win32.WinEventDelegate winEventRueckruf; // Referenz halten, sonst räumt der GC den Delegaten ab
+    private readonly IntPtr winEventHook;
 
     public event Action<IntPtr> FensterErstellt;
     public event Action<IntPtr> FensterZerstoert;
+    public event Action<IntPtr> FensterBewegt;
     public event Action HotkeyUmschalten;
 
     public HookFenster()
@@ -366,10 +383,20 @@ internal sealed class HookFenster : NativeWindow
         // Win+Z bleibt frei (dort liegen die Windows-Snap-Layouts);
         // nur Win+Umschalt+Z zum Umschalten der Automatik
         Win32.RegisterHotKey(Handle, 2, Win32.MOD_WIN | Win32.MOD_SHIFT | Win32.MOD_NOREPEAT, Win32.VK_Z);
+        winEventRueckruf = BeiWinEvent;
+        winEventHook = Win32.SetWinEventHook(Win32.EVENT_SYSTEM_MOVESIZEEND, Win32.EVENT_SYSTEM_MOVESIZEEND,
+            IntPtr.Zero, winEventRueckruf, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
+    }
+
+    private void BeiWinEvent(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit)
+    {
+        if (idObject == 0 && hwnd != IntPtr.Zero) // OBJID_WINDOW
+            FensterBewegt?.Invoke(hwnd);
     }
 
     public void Freigeben()
     {
+        Win32.UnhookWinEvent(winEventHook);
         Win32.UnregisterHotKey(Handle, 2);
         Win32.DeregisterShellHookWindow(Handle);
         DestroyHandle();
@@ -414,6 +441,10 @@ internal static class Win32
     public const int SW_SHOWMINIMIZED = 2;
     public const int SW_SHOWMAXIMIZED = 3;
     public const int WPF_RESTORETOMAXIMIZED = 0x2;
+    public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+    public const uint WINEVENT_OUTOFCONTEXT = 0;
+
+    public delegate void WinEventDelegate(IntPtr hook, uint ereignis, IntPtr hwnd, int idObject, int idChild, uint thread, uint zeit);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT
@@ -456,5 +487,7 @@ internal static class Win32
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
+    [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr modul, WinEventDelegate rueckruf, uint pid, uint tid, uint flags);
+    [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
     [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
 }
