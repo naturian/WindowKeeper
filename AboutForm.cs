@@ -29,7 +29,7 @@ internal sealed class AboutForm : Form
             ColumnCount = 1,
             RowCount = 5,
             Dock = DockStyle.Fill,
-            Padding = new Padding(16),
+            Padding = new Padding(20),
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -41,7 +41,7 @@ internal sealed class AboutForm : Form
         {
             Text = $"WindowKeeper {Diagnostics.VersionText}",
             AutoSize = true,
-            Font = new Font(FontFamily.GenericSansSerif, 16, FontStyle.Bold),
+            Font = new Font("Segoe UI Semibold", 15f),
             Margin = new Padding(0, 0, 0, 4),
         }, 0, 0);
         root.Controls.Add(new Label
@@ -57,7 +57,8 @@ internal sealed class AboutForm : Form
             ReadOnly = true,
             ScrollBars = ScrollBars.Vertical,
             Dock = DockStyle.Fill,
-            Font = new Font(FontFamily.GenericMonospace, 9),
+            BorderStyle = BorderStyle.None,
+            Font = new Font("Cascadia Mono", 9.5f),
             Text = diagnostics,
         };
         root.Controls.Add(report, 0, 2);
@@ -80,12 +81,12 @@ internal sealed class AboutForm : Form
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
         };
-        var close = new Button { Text = Loc.T("Common.Close"), AutoSize = true, DialogResult = DialogResult.OK };
-        var issues = new Button { Text = Loc.T("About.ReportProblem"), AutoSize = true };
+        var close = new Button { Text = Loc.T("Common.Close"), AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(104, 34) };
+        var issues = new Button { Text = Loc.T("About.ReportProblem"), AutoSize = true, MinimumSize = new Size(0, 34) };
         issues.Click += (_, _) => OpenUrl("https://github.com/naturian/WindowKeeper/issues/new");
-        var logs = new Button { Text = Loc.T("About.OpenLogs"), AutoSize = true };
+        var logs = new Button { Text = Loc.T("About.OpenLogs"), AutoSize = true, MinimumSize = new Size(0, 34) };
         logs.Click += (_, _) => OpenLogs();
-        var copy = new Button { Text = Loc.T("About.CopyDiagnostics"), AutoSize = true };
+        var copy = new Button { Text = Loc.T("About.CopyDiagnostics"), AutoSize = true, MinimumSize = new Size(0, 34) };
         copy.Click += (_, _) => Clipboard.SetText(diagnostics);
         buttons.Controls.Add(close);
         buttons.Controls.Add(issues);

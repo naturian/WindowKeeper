@@ -33,6 +33,10 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (s, e) => AppLog.Error(e.ExceptionObject);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
+#pragma warning disable WFO5001 // dark mode is marked experimental but stable in practice
+        Application.SetColorMode(SystemColorMode.System);
+#pragma warning restore WFO5001
+        Application.SetDefaultFont(new Font("Segoe UI", 10f));
         Application.Run(new KeeperContext());
         return 0;
     }
@@ -906,7 +910,12 @@ internal sealed class KeeperContext : ApplicationContext
 
     private ContextMenuStrip BuildTrayMenu()
     {
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip
+        {
+            Padding = new Padding(4, 6, 4, 6),
+            ShowImageMargin = false,
+        };
+        menu.HandleCreated += (s, _) => Win32.RoundCorners(((ContextMenuStrip)s!).Handle);
         var openSettings = new ToolStripMenuItem(Loc.T("Tray.Settings"));
         openSettings.Click += (_, _) => OpenSettings();
         enabledItem = new ToolStripMenuItem(Loc.T("Tray.Enabled")) { Checked = enabled, CheckOnClick = true };
@@ -1111,6 +1120,17 @@ internal sealed class HookWindow : NativeWindow
 
 internal static class Win32
 {
+    // Windows 11 rounds top-level windows automatically, but popup surfaces
+    // like ContextMenuStrip need to opt in via DWM
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    public static void RoundCorners(IntPtr handle)
+    {
+        int preference = 2; // DWMWCP_ROUND
+        _ = DwmSetWindowAttribute(handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref preference, sizeof(int));
+    }
+
     public const long HSHELL_WINDOWCREATED = 1;
     public const long HSHELL_WINDOWDESTROYED = 2;
     public const int WM_HOTKEY = 0x0312;

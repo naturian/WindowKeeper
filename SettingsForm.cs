@@ -22,7 +22,9 @@ internal sealed class SettingsForm : Form
         AutoGenerateColumns = false,
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
         BackgroundColor = SystemColors.Window,
-        BorderStyle = BorderStyle.Fixed3D,
+        BorderStyle = BorderStyle.None,
+        ColumnHeadersHeight = 34,
+        ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
         Dock = DockStyle.Fill,
         MultiSelect = false,
         RowHeadersVisible = false,
@@ -66,7 +68,7 @@ internal sealed class SettingsForm : Form
         {
             ColumnCount = 1,
             Dock = DockStyle.Fill,
-            Padding = new Padding(14),
+            Padding = new Padding(20),
             RowCount = 4,
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -80,7 +82,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             ColumnCount = 3,
             Dock = DockStyle.Fill,
-            Padding = new Padding(10),
+            Padding = new Padding(12, 14, 12, 12),
         };
         generalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 245));
         generalGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
@@ -106,7 +108,7 @@ internal sealed class SettingsForm : Form
         picker.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         picker.Controls.Add(new Label { Text = Loc.T("Settings.AddOpen"), AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         picker.Controls.Add(openWindows, 1, 0);
-        var add = new Button { Text = Loc.T("Settings.AddRule"), AutoSize = true };
+        var add = new Button { Text = Loc.T("Settings.AddRule"), AutoSize = true, MinimumSize = new Size(0, 32) };
         add.Click += (_, _) => AddSelectedWindow();
         picker.Controls.Add(add, 2, 0);
 
@@ -116,9 +118,9 @@ internal sealed class SettingsForm : Form
         rulesLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         rulesLayout.Controls.Add(ruleGrid, 0, 0);
         var ruleButtons = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Dock = DockStyle.Fill };
-        var addManual = new Button { Text = Loc.T("Settings.AddManual"), AutoSize = true };
+        var addManual = new Button { Text = Loc.T("Settings.AddManual"), AutoSize = true, MinimumSize = new Size(0, 32) };
         addManual.Click += (_, _) => rules.Add(new WindowRule());
-        var remove = new Button { Text = Loc.T("Settings.RemoveSelected"), AutoSize = true };
+        var remove = new Button { Text = Loc.T("Settings.RemoveSelected"), AutoSize = true, MinimumSize = new Size(0, 32) };
         remove.Click += (_, _) => RemoveSelectedRule();
         ruleButtons.Controls.Add(addManual);
         ruleButtons.Controls.Add(remove);
@@ -132,8 +134,8 @@ internal sealed class SettingsForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(0, 10, 0, 0),
         };
-        var cancel = new Button { Text = Loc.T("Common.Cancel"), DialogResult = DialogResult.Cancel, AutoSize = true };
-        var save = new Button { Text = Loc.T("Common.Save"), AutoSize = true };
+        var cancel = new Button { Text = Loc.T("Common.Cancel"), DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(104, 34) };
+        var save = new Button { Text = Loc.T("Common.Save"), AutoSize = true, MinimumSize = new Size(104, 34) };
         save.Click += (_, _) => SaveAndClose();
         bottom.Controls.Add(cancel);
         bottom.Controls.Add(save);
