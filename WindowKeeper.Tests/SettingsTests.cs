@@ -13,6 +13,7 @@ public sealed class SettingsTests
             TopLeftThreshold = -10,
             MinLifetimeMs = 9_000_000,
             MaxAgeDays = 0,
+            CascadeOffset = 999,
             Rules =
             [
                 new WindowRule { Process = "  notepad.exe ", Mode = "unexpected" },
@@ -25,6 +26,7 @@ public sealed class SettingsTests
         Assert.Equal(0, settings.TopLeftThreshold);
         Assert.Equal(3_600_000, settings.MinLifetimeMs);
         Assert.Equal(1, settings.MaxAgeDays);
+        Assert.Equal(250, settings.CascadeOffset);
         WindowRule rule = Assert.Single(settings.Rules);
         Assert.Equal("notepad", rule.Process);
         Assert.Equal("normal", rule.Mode);
@@ -37,5 +39,32 @@ public sealed class SettingsTests
         var settings = new Settings { Rules = [expected] };
 
         Assert.Same(expected, settings.RuleFor("code"));
+    }
+
+    [Fact]
+    public void NormalizeKeepsLastDuplicateAndMakesTitlePrivacyUnambiguous()
+    {
+        var settings = new Settings
+        {
+            Rules =
+            [
+                new WindowRule { Process = "code", Mode = "ignore" },
+                new WindowRule
+                {
+                    Process = "CODE.exe",
+                    Mode = "CENTER",
+                    IgnoreTitle = true,
+                    HashTitle = true,
+                },
+            ],
+        };
+
+        settings.Normalize();
+
+        WindowRule rule = Assert.Single(settings.Rules);
+        Assert.Equal("CODE", rule.Process);
+        Assert.Equal("center", rule.Mode);
+        Assert.True(rule.IgnoreTitle);
+        Assert.False(rule.HashTitle);
     }
 }

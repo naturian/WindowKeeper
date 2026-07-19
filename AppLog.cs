@@ -4,7 +4,7 @@ internal static class AppLog
 {
     private const long MaxLogBytes = 1_000_000;
     private static readonly object Sync = new();
-    private static readonly string LogDirectory = Path.Combine(
+    internal static readonly string LogDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "WindowKeeper", "Logs");
 

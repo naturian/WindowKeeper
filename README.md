@@ -37,7 +37,8 @@ plays at the target position instead of the corner.
   yet), only top-left openers are centered; all other unknown windows are
   left alone.
 - If a second window with the same key opens, it is not stacked onto the
-  one that is already open.
+  one that is already open. Matching additional windows are cascaded by a
+  configurable offset.
 
 ## Download & install
 
@@ -67,13 +68,18 @@ tested, checksummed and supplied with build provenance by GitHub Actions.
 - `Win+Shift+Z` toggles automatic positioning. (`Win+Z` intentionally stays
   free — Windows snap layouts live there.)
 - Tray icon with a menu (toggle automatic positioning, forget saved
-  positions, exit). The icon is generated with `tools/create-icon.ps1` and
-  embedded into the executable as `icon.ico`.
+  positions, open settings/data/diagnostics, exit).
+- Double-click the tray icon or choose **Settings…** to edit behavior and
+  per-application rules without restarting WindowKeeper. Rules can be added
+  directly from a list of currently open applications.
+- **About and diagnostics…** shows a privacy-safe environment summary, opens
+  the local logs and performs an explicit, manual update check against GitHub.
 
 ## Configuration
 
-`%APPDATA%\WindowKeeper\settings.json` is created on first run and read at
-startup (restart WindowKeeper after editing):
+`%APPDATA%\WindowKeeper\settings.json` is created on first run. The settings
+window is the recommended editor and applies changes immediately. Manual JSON
+edits are read the next time WindowKeeper starts:
 
 ```json
 {
@@ -81,6 +87,7 @@ startup (restart WindowKeeper after editing):
   "TopLeftThreshold": 350,
   "MinLifetimeMs": 10000,
   "MaxAgeDays": 90,
+  "CascadeOffset": 32,
   "Rules": [
     { "Process": "firefox", "Mode": "ignore" },
     { "Process": "notepad", "Mode": "center" },
@@ -96,6 +103,8 @@ startup (restart WindowKeeper after editing):
 - `MinLifetimeMs` — windows that close sooner and were never touched are not
   remembered (filters splash screens).
 - `MaxAgeDays` — entries unused for this long are pruned at startup.
+- `CascadeOffset` — number of pixels used to offset additional matching
+  windows; set to `0` to disable the visible cascade.
 - `Rules` — per-process overrides (`Process` is the process name without
   `.exe`, matched case-insensitively):
   - `"Mode": "ignore"` — never touch and never remember this process.
@@ -130,6 +139,8 @@ fall back to `normal`. A malformed JSON file is preserved with a
   transient dialogs) are not remembered; open windows are flushed to disk
   periodically so nothing is lost on a hard process kill; entries unused for
   90 days are pruned at startup.
+- Positions are also flushed when Windows locks or disconnects the session,
+  enters standby, logs off or shuts down.
 - Positions are stored **per monitor configuration** (resolution + layout):
   on a display change (`DisplaySettingsChanged`) WindowKeeper automatically
   switches to the matching profile, so different setups do not overwrite
@@ -151,13 +162,13 @@ plaintext. No data is transmitted anywhere.
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained `
   -p:PublishSingleFile=true -o publish-sc
-.\tools\build-installer.ps1 -Version 2.1.0 `
+.\tools\build-installer.ps1 -Version 2.2.0 `
   -SourceDir .\publish-sc -OutputDir .\installer-output
 ```
 
 The installer build helper downloads the pinned Inno Setup 7.0.2 compiler,
 verifies its SHA-256 hash and Authenticode publisher, and then creates
-`WindowKeeper-Setup-2.1.0.exe`.
+`WindowKeeper-Setup-2.2.0.exe`.
 
 `--install` prompts for elevation once, copies the published files to
 `%ProgramFiles%\WindowKeeper`, and registers the **WindowKeeper** scheduled

@@ -46,6 +46,25 @@ internal static class PlacementGeometry
             height);
     }
 
+    public static Placement Cascade(Placement placement, int duplicateIndex, int offset)
+    {
+        int safeIndex = Math.Max(0, duplicateIndex);
+        int safeOffset = Math.Max(0, offset);
+        long delta = (long)safeIndex * safeOffset;
+        var result = Copy(
+            placement,
+            ClampCoordinate((long)placement.X + delta),
+            ClampCoordinate((long)placement.Y + delta),
+            placement.Width,
+            placement.Height);
+        if (safeIndex > 0)
+            result.Maximized = false;
+        return result;
+    }
+
+    private static int ClampCoordinate(long value) =>
+        (int)Math.Clamp(value, -32_767L, 32_767L);
+
     private static bool HasMinimumVisibleArea(Rectangle window, Rectangle workArea)
     {
         Rectangle intersection = Rectangle.Intersect(window, workArea);

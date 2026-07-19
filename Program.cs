@@ -295,103 +295,6 @@ internal static class Installer
     }
 }
 
-// Remembered normal position of a window
-internal sealed class Placement
-{
-    public int X { get; set; }
-    public int Y { get; set; }
-    public int Width { get; set; }
-    public int Height { get; set; }
-    public bool Maximized { get; set; }
-    public DateTimeOffset LastUsed { get; set; }
-}
-
-// A currently open window whose position is being tracked
-internal sealed class TrackedWindow
-{
-    public string Key = "";
-    public Placement Last = new();
-    public long OpenedAt;      // Environment.TickCount64 at first sighting
-    public bool UserMoved;     // set when an interactive move/resize ends
-}
-
-// Per-process rule from settings.json
-internal sealed class WindowRule
-{
-    public string Process { get; set; } = "";     // process name, without .exe
-    public string Mode { get; set; } = "normal";  // normal | ignore | center
-    public bool IgnoreTitle { get; set; }         // key becomes process|class| — useful
-                                                  // for apps with document titles
-    public bool HashTitle { get; set; }           // avoid storing document names/URLs in plaintext
-}
-
-// User configuration, loaded once at startup from settings.json next to the
-// position store; a default file is written on first run
-internal sealed class Settings
-{
-    public bool Enabled { get; set; } = true;
-    public int TopLeftThreshold { get; set; } = 350;
-    public int MinLifetimeMs { get; set; } = 10_000;
-    public int MaxAgeDays { get; set; } = 90;
-    public List<WindowRule> Rules { get; set; } = new();
-
-    internal static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "WindowKeeper", "settings.json");
-
-    public static Settings Load()
-    {
-        try
-        {
-            Settings loaded = AtomicJsonFile.Read<Settings>(SettingsPath) ?? new Settings();
-            loaded.Normalize();
-            if (!File.Exists(SettingsPath))
-                loaded.Save();
-            return loaded;
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex);
-            return new Settings();
-        }
-    }
-
-    public void Save()
-    {
-        try
-        {
-            Normalize();
-            AtomicJsonFile.Write(SettingsPath, this);
-        }
-        catch (Exception ex)
-        {
-            AppLog.Error(ex);
-        }
-    }
-
-    internal void Normalize()
-    {
-        TopLeftThreshold = Math.Clamp(TopLeftThreshold, 0, 5_000);
-        MinLifetimeMs = Math.Clamp(MinLifetimeMs, 0, 3_600_000);
-        MaxAgeDays = Math.Clamp(MaxAgeDays, 1, 3_650);
-        Rules ??= [];
-        foreach (WindowRule rule in Rules)
-        {
-            rule.Process = Path.GetFileNameWithoutExtension(rule.Process?.Trim() ?? "");
-            if (!string.Equals(rule.Mode, "normal", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(rule.Mode, "ignore", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(rule.Mode, "center", StringComparison.OrdinalIgnoreCase))
-            {
-                rule.Mode = "normal";
-            }
-        }
-        Rules.RemoveAll(rule => string.IsNullOrWhiteSpace(rule.Process));
-    }
-
-    public WindowRule? RuleFor(string process) =>
-        Rules.FirstOrDefault(r => string.Equals(r.Process, process, StringComparison.OrdinalIgnoreCase));
-}
-
 internal sealed class KeeperContext : ApplicationContext
 {
     private const int FirstPassMs = 150;
@@ -443,6 +346,9 @@ internal sealed class KeeperContext : ApplicationContext
         trackingTimer.Start();
 
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+        Microsoft.Win32.SystemEvents.SessionEnding += OnSessionEnding;
+        Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
         tray = CreateTray();
 
@@ -519,6 +425,25 @@ internal sealed class KeeperContext : ApplicationContext
         }
     }
 
+    private void OnSessionEnding(object sender, Microsoft.Win32.SessionEndingEventArgs e) =>
+        FlushTracked();
+
+    private void OnSessionSwitch(object sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        if (e.Reason is Microsoft.Win32.SessionSwitchReason.SessionLock
+            or Microsoft.Win32.SessionSwitchReason.ConsoleDisconnect
+            or Microsoft.Win32.SessionSwitchReason.RemoteDisconnect)
+        {
+            FlushTracked();
+        }
+    }
+
+    private void OnPowerModeChanged(object sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Suspend)
+            FlushTracked();
+    }
+
     private void RefreshTrackedPlacements()
     {
         foreach (var (hwnd, entry) in tracked)
@@ -591,13 +516,12 @@ internal sealed class KeeperContext : ApplicationContext
             if (target != null)
             {
                 target = EnsureVisible(target);
+                int duplicateIndex = MatchingWindowCount(hwnd, key);
+                if (duplicateIndex > 0)
+                    target = EnsureVisible(PlacementGeometry.Cascade(
+                        target, duplicateIndex, settings.CascadeOffset));
                 if (target.Maximized)
                     return; // maximizing is handled by the delayed pass
-                if (AnotherWindowWithKey(hwnd, key))
-                {
-                    Track(hwnd, key);
-                    return; // don't stack onto the window that is already open
-                }
                 if (r.Left != target.X || r.Top != target.Y)
                 {
                     Win32.ShowWindow(hwnd, Win32.SW_HIDE);
@@ -607,10 +531,20 @@ internal sealed class KeeperContext : ApplicationContext
             }
             else if (topLeft)
             {
-                // unknown window without its own position management: center it
-                Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-                Center(hwnd);
-                Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+                Placement? occupied = FirstMatchingPlacement(hwnd, key);
+                if (occupied != null)
+                {
+                    int duplicateIndex = Math.Max(1, MatchingWindowCount(hwnd, key));
+                    Apply(hwnd, EnsureVisible(PlacementGeometry.Cascade(
+                        occupied, duplicateIndex, settings.CascadeOffset)));
+                }
+                else
+                {
+                    // Unknown first window without its own position management.
+                    Win32.ShowWindow(hwnd, Win32.SW_HIDE);
+                    Center(hwnd);
+                    Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+                }
             }
             // track in every case so the closing position gets stored — even
             // for windows we do not (yet) touch
@@ -650,12 +584,20 @@ internal sealed class KeeperContext : ApplicationContext
             }
             if (saved.TryGetValue(key, out var p))
             {
-                if (!AnotherWindowWithKey(hwnd, key))
-                    Apply(hwnd, EnsureVisible(p));
+                int duplicateIndex = MatchingWindowCount(hwnd, key);
+                Placement target = duplicateIndex == 0
+                    ? p
+                    : PlacementGeometry.Cascade(p, duplicateIndex, settings.CascadeOffset);
+                Apply(hwnd, EnsureVisible(target));
             }
             else if (topLeft)
             {
-                Center(hwnd);
+                Placement? occupied = FirstMatchingPlacement(hwnd, key);
+                if (occupied == null)
+                    Center(hwnd);
+                else
+                    Apply(hwnd, EnsureVisible(PlacementGeometry.Cascade(
+                        occupied, Math.Max(1, MatchingWindowCount(hwnd, key)), settings.CascadeOffset)));
             }
             Track(hwnd, key);
         }
@@ -673,17 +615,13 @@ internal sealed class KeeperContext : ApplicationContext
         }
     }
 
-    // Is another window with the same key already open? Then don't move the
-    // new one onto the same spot (e.g. a second Explorer window).
-    private bool AnotherWindowWithKey(IntPtr hwnd, string key)
-    {
-        foreach (var (other, entry) in tracked)
-        {
-            if (other != hwnd && entry.Key == key && Win32.IsWindow(other))
-                return true;
-        }
-        return false;
-    }
+    private int MatchingWindowCount(IntPtr hwnd, string key) => tracked.Count(pair =>
+        pair.Key != hwnd && pair.Value.Key == key && Win32.IsWindow(pair.Key));
+
+    private Placement? FirstMatchingPlacement(IntPtr hwnd, string key) => tracked
+        .Where(pair => pair.Key != hwnd && pair.Value.Key == key && Win32.IsWindow(pair.Key))
+        .Select(pair => pair.Value.Last)
+        .FirstOrDefault();
 
     private static Placement EnsureVisible(Placement placement)
     {
@@ -816,6 +754,9 @@ internal sealed class KeeperContext : ApplicationContext
     private static bool IsNormalWindow(IntPtr hwnd)
     {
         if (!Win32.IsWindow(hwnd) || !Win32.IsWindowVisible(hwnd))
+            return false;
+        _ = Win32.GetWindowThreadProcessId(hwnd, out uint pid);
+        if (pid == Environment.ProcessId)
             return false;
         long style = Win32.GetWindowLongPtr(hwnd, Win32.GWL_STYLE).ToInt64();
         if ((style & Win32.WS_CAPTION) != Win32.WS_CAPTION)
@@ -953,6 +894,8 @@ internal sealed class KeeperContext : ApplicationContext
     private NotifyIcon CreateTray()
     {
         var menu = new ContextMenuStrip();
+        var openSettings = new ToolStripMenuItem("Settings…");
+        openSettings.Click += (_, _) => OpenSettings();
         enabledItem = new ToolStripMenuItem("Automatic positioning") { Checked = enabled, CheckOnClick = true };
         enabledItem.CheckedChanged += (s, e) =>
         {
@@ -986,21 +929,51 @@ internal sealed class KeeperContext : ApplicationContext
             Directory.CreateDirectory(dataDirectory);
             _ = Process.Start(new ProcessStartInfo(dataDirectory) { UseShellExecute = true });
         };
+        var about = new ToolStripMenuItem("About and diagnostics…");
+        about.Click += (_, _) => OpenAbout();
         var exit = new ToolStripMenuItem("Exit");
         exit.Click += (s, e) => ExitThread();
+        menu.Items.Add(openSettings);
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(enabledItem);
         menu.Items.Add(forgetCurrent);
         menu.Items.Add(forgetAll);
         menu.Items.Add(openData);
+        menu.Items.Add(about);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
-        return new NotifyIcon
+        var notifyIcon = new NotifyIcon
         {
             Icon = LoadTrayIcon(),
             Text = "WindowKeeper – Win+Shift+Z toggles automatic positioning",
             Visible = true,
             ContextMenuStrip = menu,
         };
+        notifyIcon.DoubleClick += (_, _) => OpenSettings();
+        return notifyIcon;
+    }
+
+    private void OpenSettings()
+    {
+        using var form = new SettingsForm(settings, WindowCatalog.Capture());
+        if (form.ShowDialog() != DialogResult.OK)
+            return;
+
+        settings.Normalize();
+        enabled = settings.Enabled;
+        enabledItem.Checked = enabled;
+        Prune(profiles, settings.MaxAgeDays);
+        tracked.Clear();
+        AdoptExistingWindows();
+        Save();
+    }
+
+    private void OpenAbout()
+    {
+        string diagnostics = Diagnostics.Build(
+            profiles.Count, saved.Count, settings.Rules.Count);
+        using var form = new AboutForm(diagnostics);
+        _ = form.ShowDialog();
     }
 
     private static Icon LoadTrayIcon()
@@ -1025,16 +998,25 @@ internal sealed class KeeperContext : ApplicationContext
     private void Cleanup()
     {
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+        Microsoft.Win32.SystemEvents.SessionEnding -= OnSessionEnding;
+        Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         trackingTimer.Stop();
-        foreach (var entry in tracked.Values)
+        FlushTracked();
+        tray.Visible = false;
+        tray.Dispose();
+        hook.Release();
+    }
+
+    private void FlushTracked()
+    {
+        RefreshTrackedPlacements();
+        foreach (TrackedWindow entry in tracked.Values)
         {
             if (ShouldRemember(entry))
                 Remember(entry);
         }
         Save();
-        tray.Visible = false;
-        tray.Dispose();
-        hook.Release();
     }
 }
 

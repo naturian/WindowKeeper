@@ -55,4 +55,22 @@ public sealed class PlacementGeometryTests
         Assert.Equal(PlacementGeometry.MinimumVisibleWidth, result.Width);
         Assert.Equal(WorkArea.Height, result.Height);
     }
+
+    [Fact]
+    public void CascadeOffsetsDuplicateAndRestoresItNormally()
+    {
+        var placement = new Placement
+        {
+            X = 100,
+            Y = 200,
+            Width = 800,
+            Height = 600,
+            Maximized = true,
+        };
+
+        Placement result = PlacementGeometry.Cascade(placement, 2, 32);
+
+        Assert.Equal((164, 264), (result.X, result.Y));
+        Assert.False(result.Maximized);
+    }
 }
