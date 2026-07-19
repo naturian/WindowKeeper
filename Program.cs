@@ -104,42 +104,74 @@ internal sealed class MerkerKontext : ApplicationContext
             if (r.Left - arbeit.Left > Schwelle || r.Top - arbeit.Top > Schwelle)
                 return;
 
-            // Der Titel stimmt beim Erstellen oft noch nicht (MMC trägt hier
-            // erst den generischen Titel; der echte kommt beim Anzeigen).
-            // Wenn genau ein gemerkter Eintrag zu Prozess|Klasse passt, ist
-            // die Zuordnung trotzdem eindeutig.
-            string schluessel = SchluesselFuer(hwnd);
-            if (!gespeichert.TryGetValue(schluessel, out var gemerkt))
-            {
-                string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
-                var passende = gespeichert
-                    .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
-                    .Take(2).ToList();
-                gemerkt = passende.Count == 1 ? passende[0].Value : null;
-            }
-
             // SetWindowPos zeigt/versteckt nichts — sicher, selbst wenn das
             // Fenster zwischen Prüfung und Aufruf sichtbar geworden ist
+            var gemerkt = GemerktesZiel(hwnd);
             if (gemerkt != null)
             {
-                if (gemerkt.Maximiert || !IstSichtbar(gemerkt))
-                    return; // Maximieren übernimmt die normale Prüfung
                 Win32.SetWindowPos(hwnd, IntPtr.Zero, gemerkt.X, gemerkt.Y, gemerkt.Breite, gemerkt.Hoehe,
                     Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
-                // Manche Programme (MMC) verschieben ihr Fenster nach dem
-                // Erstellen selbst noch einmal — der Wächter setzt es dann
-                // zurück, solange es unsichtbar ist
                 vorabKorrektur[hwnd] = (gemerkt, 5);
             }
             else
             {
-                // erste Öffnung: nur Position zentrieren, die Größe kennt die App besser
+                // Ziel (noch) nicht auflösbar oder unbekannt: vorerst nur
+                // zentrieren; die Auflösung versucht es gleich erneut, denn
+                // der endgültige Titel wird oft erst später gesetzt
                 int b = r.Right - r.Left, h = r.Bottom - r.Top;
                 Win32.SetWindowPos(hwnd, IntPtr.Zero,
                     arbeit.Left + (arbeit.Width - b) / 2, arbeit.Top + (arbeit.Height - h) / 2, 0, 0,
                     Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+                vorabKorrektur[hwnd] = (null, 5);
+                Verzoegert(25, () => FruehAufloesen(hwnd, 1));
             }
             vorabPositioniert.Add(hwnd);
+        }
+        catch
+        {
+        }
+    }
+
+    // Gemerkte Platzierung zum Fenster: erst voller Schlüssel, sonst über
+    // Prozess|Klasse, wenn genau ein Eintrag passt (der Titel stimmt beim
+    // Erstellen oft noch nicht — MMC trägt anfangs den generischen Titel)
+    private Platzierung GemerktesZiel(IntPtr hwnd)
+    {
+        string schluessel = SchluesselFuer(hwnd);
+        if (!gespeichert.TryGetValue(schluessel, out var p))
+        {
+            string praefix = schluessel[..(schluessel.LastIndexOf('|') + 1)];
+            var passende = gespeichert
+                .Where(e => e.Key.StartsWith(praefix, StringComparison.Ordinal))
+                .Take(2).ToList();
+            p = passende.Count == 1 ? passende[0].Value : null;
+        }
+        if (p == null || p.Maximiert || !IstSichtbar(p))
+            return null; // Maximieren übernimmt die normale Prüfung
+        return p;
+    }
+
+    // Solange das Fenster unsichtbar ist, weiter versuchen, das Ziel über den
+    // (inzwischen vielleicht endgültigen) Titel aufzulösen
+    private void FruehAufloesen(IntPtr hwnd, int versuch)
+    {
+        try
+        {
+            if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag) || eintrag.Ziel != null)
+                return;
+            if (!Win32.IsWindow(hwnd) || Win32.IsWindowVisible(hwnd))
+                return; // beim Anzeigen übernimmt FensterGezeigt
+            var gemerkt = GemerktesZiel(hwnd);
+            if (gemerkt != null)
+            {
+                Win32.SetWindowPos(hwnd, IntPtr.Zero, gemerkt.X, gemerkt.Y, gemerkt.Breite, gemerkt.Hoehe,
+                    Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+                vorabKorrektur[hwnd] = (gemerkt, eintrag.Uebrig);
+            }
+            else if (versuch < 12)
+            {
+                Verzoegert(25, () => FruehAufloesen(hwnd, versuch + 1));
+            }
         }
         catch
         {
@@ -162,15 +194,23 @@ internal sealed class MerkerKontext : ApplicationContext
                 vorabKorrektur.Remove(hwnd);
                 return;
             }
-            if (Win32.GetWindowRect(hwnd, out var r) && r.Left == eintrag.Ziel.X && r.Top == eintrag.Ziel.Y)
+            // beim Anzeigen ist der endgültige Titel gesetzt — Ziel neu auflösen
+            var ziel = GemerktesZiel(hwnd) ?? eintrag.Ziel;
+            if (ziel == null)
+            {
+                // Titel noch nicht endgültig? Gleich noch einmal versuchen.
+                vorabKorrektur[hwnd] = (null, eintrag.Uebrig - 1);
+                Verzoegert(40, () => FensterGezeigt(hwnd));
+                return;
+            }
+            if (Win32.GetWindowRect(hwnd, out var r) && r.Left == ziel.X && r.Top == ziel.Y)
             {
                 vorabKorrektur.Remove(hwnd); // am Ziel sichtbar geworden -> fertig
                 return;
             }
-            vorabKorrektur[hwnd] = (eintrag.Ziel, eintrag.Uebrig - 1);
+            vorabKorrektur[hwnd] = (ziel, eintrag.Uebrig - 1);
             Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-            Win32.SetWindowPos(hwnd, IntPtr.Zero,
-                eintrag.Ziel.X, eintrag.Ziel.Y, eintrag.Ziel.Breite, eintrag.Ziel.Hoehe,
+            Win32.SetWindowPos(hwnd, IntPtr.Zero, ziel.X, ziel.Y, ziel.Breite, ziel.Hoehe,
                 Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
             Win32.ShowWindow(hwnd, Win32.SW_SHOW);
         }
@@ -184,7 +224,7 @@ internal sealed class MerkerKontext : ApplicationContext
     // Anzeigen endet die Überwachung
     private void FensterOrtGeaendert(IntPtr hwnd)
     {
-        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag))
+        if (!vorabKorrektur.TryGetValue(hwnd, out var eintrag) || eintrag.Ziel == null)
             return;
         try
         {
