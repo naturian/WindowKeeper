@@ -38,6 +38,10 @@ corner (e.g. Device Manager and other MMC/system tools):
 - Positions are tracked via `GetWindowPlacement` (every 4 s) and saved on
   close to `%APPDATA%\WindowKeeper\positions.json`.
   Key: `process|windowClass|title`.
+- Data hygiene: short-lived windows the user never touched (splash screens,
+  transient dialogs) are not remembered; open windows are flushed to disk
+  periodically so nothing is lost on a hard process kill; entries unused for
+  90 days are pruned at startup.
 - Positions are stored **per monitor configuration** (resolution + layout):
   on a display change (`DisplaySettingsChanged`) WindowKeeper automatically
   switches to the matching profile, so different setups do not overwrite

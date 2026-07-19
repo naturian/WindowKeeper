@@ -44,6 +44,16 @@ internal sealed class Placement
     public int Width { get; set; }
     public int Height { get; set; }
     public bool Maximized { get; set; }
+    public DateTime LastUsed { get; set; }
+}
+
+// A currently open window whose position is being tracked
+internal sealed class TrackedWindow
+{
+    public string Key;
+    public Placement Last;
+    public long OpenedAt;      // Environment.TickCount64 at first sighting
+    public bool UserMoved;     // set when an interactive move/resize ends
 }
 
 internal sealed class KeeperContext : ApplicationContext
@@ -58,6 +68,11 @@ internal sealed class KeeperContext : ApplicationContext
     // been created — hence a second delayed pass.
     private const int SecondPassMs = 700;
     private const int TrackingIntervalMs = 4000;
+    // Positions of short-lived windows the user never touched (splash
+    // screens, transient dialogs) are not worth remembering.
+    private const int MinLifetimeMs = 10_000;
+    // Entries that have not been used for this long are pruned at startup.
+    private const int MaxAgeDays = 90;
     // =========================================================================
 
     private static readonly string DataPath = Path.Combine(
@@ -73,7 +88,7 @@ internal sealed class KeeperContext : ApplicationContext
     private readonly Dictionary<string, Dictionary<string, Placement>> profiles;
     private Dictionary<string, Placement> saved; // active profile
     private string activeProfile;
-    private readonly Dictionary<IntPtr, (string Key, Placement Last)> tracked = new();
+    private readonly Dictionary<IntPtr, TrackedWindow> tracked = new();
     private bool enabled = true;
 
     public KeeperContext()
@@ -244,9 +259,9 @@ internal sealed class KeeperContext : ApplicationContext
 
     private void OnWindowDestroyed(IntPtr hwnd)
     {
-        if (tracked.Remove(hwnd, out var entry))
+        if (tracked.Remove(hwnd, out var entry) && ShouldRemember(entry))
         {
-            saved[entry.Key] = entry.Last;
+            Remember(entry);
             Save();
         }
     }
@@ -273,16 +288,50 @@ internal sealed class KeeperContext : ApplicationContext
         {
             var p = CurrentPlacement(hwnd);
             if (p != null)
-                tracked[hwnd] = (entry.Key, p);
+            {
+                entry.Last = p;
+                entry.UserMoved = true; // MOVESIZEEND fires for interactive moves only
+            }
         }
     }
 
     private void Track(IntPtr hwnd, string key)
     {
         var p = CurrentPlacement(hwnd);
-        if (p != null)
-            tracked[hwnd] = (key, p);
+        if (p == null)
+            return;
+        if (tracked.TryGetValue(hwnd, out var entry))
+        {
+            entry.Key = key; // the title may have settled since the first pass
+            entry.Last = p;
+        }
+        else
+        {
+            tracked[hwnd] = new TrackedWindow
+            {
+                Key = key,
+                Last = p,
+                OpenedAt = Environment.TickCount64,
+            };
+        }
     }
+
+    // Windows worth remembering: anything that already has an entry, was
+    // moved or resized by the user, or stayed open beyond the splash-screen
+    // lifetime.
+    private bool ShouldRemember(TrackedWindow entry) =>
+        saved.ContainsKey(entry.Key)
+        || entry.UserMoved
+        || Environment.TickCount64 - entry.OpenedAt >= MinLifetimeMs;
+
+    private void Remember(TrackedWindow entry)
+    {
+        entry.Last.LastUsed = DateTime.Now;
+        saved[entry.Key] = entry.Last;
+    }
+
+    private static bool Differs(Placement a, Placement b) =>
+        a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height || a.Maximized != b.Maximized;
 
     private void UpdateTracked()
     {
@@ -292,13 +341,24 @@ internal sealed class KeeperContext : ApplicationContext
             if (!Win32.IsWindow(hwnd))
             {
                 tracked.Remove(hwnd);
-                saved[entry.Key] = entry.Last;
-                changed = true;
+                if (ShouldRemember(entry))
+                {
+                    Remember(entry);
+                    changed = true;
+                }
                 continue;
             }
             var p = CurrentPlacement(hwnd);
             if (p != null)
-                tracked[hwnd] = (entry.Key, p);
+                entry.Last = p;
+            // flush open windows into the store as well, so a hard kill of
+            // this process (task restart, crash) loses nothing
+            if (ShouldRemember(entry)
+                && (!saved.TryGetValue(entry.Key, out var current) || Differs(current, entry.Last)))
+            {
+                Remember(entry);
+                changed = true;
+            }
         }
         if (changed)
             Save();
@@ -428,13 +488,38 @@ internal sealed class KeeperContext : ApplicationContext
                 var profiles = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, Placement>>>(
                     File.ReadAllText(DataPath));
                 if (profiles != null)
+                {
+                    Prune(profiles);
                     return profiles;
+                }
             }
         }
         catch
         {
         }
         return new Dictionary<string, Dictionary<string, Placement>>();
+    }
+
+    // Drop entries that have not been used in a long time; entries from
+    // files predating the LastUsed field get a fresh grace period.
+    private static void Prune(Dictionary<string, Dictionary<string, Placement>> profiles)
+    {
+        var cutoff = DateTime.Now.AddDays(-MaxAgeDays);
+        foreach (var profile in profiles.Values)
+        {
+            foreach (var (key, p) in profile.ToList())
+            {
+                if (p.LastUsed == default)
+                    p.LastUsed = DateTime.Now;
+                else if (p.LastUsed < cutoff)
+                    profile.Remove(key);
+            }
+        }
+        foreach (var (name, profile) in profiles.ToList())
+        {
+            if (profile.Count == 0)
+                profiles.Remove(name);
+        }
     }
 
     private void Save()
@@ -502,7 +587,10 @@ internal sealed class KeeperContext : ApplicationContext
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         trackingTimer.Stop();
         foreach (var entry in tracked.Values)
-            saved[entry.Key] = entry.Last;
+        {
+            if (ShouldRemember(entry))
+                Remember(entry);
+        }
         Save();
         tray.Visible = false;
         tray.Dispose();
