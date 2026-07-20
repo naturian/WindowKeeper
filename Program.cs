@@ -976,6 +976,7 @@ internal sealed class KeeperContext : ApplicationContext
         {
             Padding = new Padding(4, 6, 4, 6),
             ShowImageMargin = false,
+            ShowCheckMargin = true,
         };
         menu.HandleCreated += (s, _) => Win32.RoundCorners(((ContextMenuStrip)s!).Handle);
         var openSettings = new ToolStripMenuItem(Loc.T("Tray.Settings"));
@@ -1015,15 +1016,17 @@ internal sealed class KeeperContext : ApplicationContext
         };
         var about = new ToolStripMenuItem(Loc.T("Tray.About"));
         about.Click += (_, _) => OpenAbout();
+        var advanced = new ToolStripMenuItem(Loc.T("Tray.Advanced"));
+        advanced.DropDownItems.Add(forgetCurrent);
+        advanced.DropDownItems.Add(forgetAll);
+        advanced.DropDownItems.Add(new ToolStripSeparator());
+        advanced.DropDownItems.Add(openData);
+        advanced.DropDownItems.Add(about);
         var exit = new ToolStripMenuItem(Loc.T("Tray.Exit"));
         exit.Click += (s, e) => ExitThread();
         menu.Items.Add(openSettings);
-        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(enabledItem);
-        menu.Items.Add(forgetCurrent);
-        menu.Items.Add(forgetAll);
-        menu.Items.Add(openData);
-        menu.Items.Add(about);
+        menu.Items.Add(advanced);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exit);
         return menu;

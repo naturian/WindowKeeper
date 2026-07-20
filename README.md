@@ -69,8 +69,9 @@ tested, checksummed and supplied with build provenance by GitHub Actions.
 
 - `Win+Shift+Z` toggles automatic positioning. (`Win+Z` intentionally stays
   free — Windows snap layouts live there.)
-- Tray icon with a menu (toggle automatic positioning, forget saved
-  positions, open settings/data/diagnostics, exit).
+- The compact tray menu provides settings, the checked automatic-positioning
+  toggle and exit. Reset and diagnostic tools remain available under
+  **Advanced**.
 - Double-click the tray icon or choose **Settings…** to edit behavior and
   per-application rules without restarting WindowKeeper. Rules can be added
   directly from a list of currently open applications.
@@ -170,13 +171,13 @@ plaintext. No data is transmitted anywhere.
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained `
   -p:PublishSingleFile=true -o publish-sc
-.\tools\build-installer.ps1 -Version 2.4.2 `
+.\tools\build-installer.ps1 -Version 2.4.3 `
   -SourceDir .\publish-sc -OutputDir .\installer-output
 ```
 
 The installer build helper downloads the pinned Inno Setup 7.0.2 compiler,
 verifies its SHA-256 hash and Authenticode publisher, and then creates
-`WindowKeeper-Setup-2.4.2.exe`.
+`WindowKeeper-Setup-2.4.3.exe`.
 
 `--install` prompts for elevation once, copies the published files to
 `%ProgramFiles%\WindowKeeper`, and registers the **WindowKeeper** scheduled

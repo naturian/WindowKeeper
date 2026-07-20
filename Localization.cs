@@ -35,6 +35,7 @@ internal static class Loc
         // tray
         ["Tray.Settings"] = ["Settings…", "Einstellungen…"],
         ["Tray.Enabled"] = ["Automatic positioning", "Automatische Positionierung"],
+        ["Tray.Advanced"] = ["Advanced", "Erweitert"],
         ["Tray.ForgetCurrent"] = [
             "Forget positions for this display setup",
             "Positionen dieser Monitor-Konfiguration vergessen"],
