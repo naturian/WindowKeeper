@@ -14,6 +14,8 @@ internal sealed class TrackedWindow
 {
     public string Key = "";
     public Placement Last = new();
+    public Placement? AssignedTarget;
+    public int CascadeSlot;
     public long OpenedAt;
     public bool UserMoved;
 }

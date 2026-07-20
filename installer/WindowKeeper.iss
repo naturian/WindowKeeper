@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.0"
+  #define MyAppVersion "2.4.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\publish-sc"

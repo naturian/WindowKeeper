@@ -38,7 +38,9 @@ plays at the target position instead of the corner.
   left alone.
 - If a second window with the same key opens, it is not stacked onto the
   one that is already open. Matching additional windows are cascaded by a
-  configurable offset.
+  configurable offset. Their temporary cascade positions never replace the
+  saved primary position, so repeated multi-window launches cannot drift
+  across the display.
 
 ## Download & install
 
@@ -166,13 +168,13 @@ plaintext. No data is transmitted anywhere.
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained `
   -p:PublishSingleFile=true -o publish-sc
-.\tools\build-installer.ps1 -Version 2.2.0 `
+.\tools\build-installer.ps1 -Version 2.4.1 `
   -SourceDir .\publish-sc -OutputDir .\installer-output
 ```
 
 The installer build helper downloads the pinned Inno Setup 7.0.2 compiler,
 verifies its SHA-256 hash and Authenticode publisher, and then creates
-`WindowKeeper-Setup-2.2.0.exe`.
+`WindowKeeper-Setup-2.4.1.exe`.
 
 `--install` prompts for elevation once, copies the published files to
 `%ProgramFiles%\WindowKeeper`, and registers the **WindowKeeper** scheduled

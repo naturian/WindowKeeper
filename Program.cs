@@ -505,25 +505,36 @@ internal sealed class KeeperContext : ApplicationContext
                 Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
                 return; // always centered, never remembered
             }
-            Placement? target = null;
-            if (!saved.TryGetValue(key, out target) && topLeft)
+            TrackedWindow? entry = Track(hwnd, key);
+            if (entry == null)
+                return;
+
+            Placement? target = entry.AssignedTarget;
+            if (target == null)
             {
-                string prefix = key[..(key.LastIndexOf('|') + 1)];
-                var matches = saved
-                    .Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal))
-                    .Take(2).ToList();
-                if (matches.Count > 1)
-                    return; // ambiguous -> the delayed passes will sort it out
-                target = matches.Count == 1 ? matches[0].Value : null;
+                if (!saved.TryGetValue(key, out target) && topLeft)
+                {
+                    string prefix = key[..(key.LastIndexOf('|') + 1)];
+                    var matches = saved
+                        .Where(e => e.Key.StartsWith(prefix, StringComparison.Ordinal))
+                        .Take(2).ToList();
+                    if (matches.Count > 1)
+                        return; // ambiguous -> the delayed passes will sort it out
+                    target = matches.Count == 1 ? matches[0].Value : null;
+                }
+
+                if (target != null)
+                {
+                    target = entry.CascadeSlot == 0
+                        ? EnsureVisible(target)
+                        : EnsureVisible(PlacementGeometry.Cascade(
+                            target, entry.CascadeSlot, settings.CascadeOffset));
+                    entry.AssignedTarget = target;
+                }
             }
 
             if (target != null)
             {
-                target = EnsureVisible(target);
-                int duplicateIndex = MatchingWindowCount(hwnd, key);
-                if (duplicateIndex > 0)
-                    target = EnsureVisible(PlacementGeometry.Cascade(
-                        target, duplicateIndex, settings.CascadeOffset));
                 if (target.Maximized)
                     return; // maximizing is handled by the delayed pass
                 if (r.Left != target.X || r.Top != target.Y)
@@ -535,12 +546,12 @@ internal sealed class KeeperContext : ApplicationContext
             }
             else if (topLeft)
             {
-                Placement? occupied = FirstMatchingPlacement(hwnd, key);
-                if (occupied != null)
+                Placement? primary = PrimaryMatchingPlacement(hwnd, key);
+                if (entry.CascadeSlot > 0 && primary != null)
                 {
-                    int duplicateIndex = Math.Max(1, MatchingWindowCount(hwnd, key));
-                    Apply(hwnd, EnsureVisible(PlacementGeometry.Cascade(
-                        occupied, duplicateIndex, settings.CascadeOffset)));
+                    target = EnsureVisible(PlacementGeometry.Cascade(
+                        primary, entry.CascadeSlot, settings.CascadeOffset));
+                    Apply(hwnd, target);
                 }
                 else
                 {
@@ -548,7 +559,9 @@ internal sealed class KeeperContext : ApplicationContext
                     Win32.ShowWindow(hwnd, Win32.SW_HIDE);
                     Center(hwnd);
                     Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+                    target = CurrentPlacement(hwnd);
                 }
+                entry.AssignedTarget = target;
             }
             // track in every case so the closing position gets stored — even
             // for windows we do not (yet) touch
@@ -586,22 +599,36 @@ internal sealed class KeeperContext : ApplicationContext
                 Center(hwnd);
                 return;
             }
-            if (saved.TryGetValue(key, out var p))
+            TrackedWindow? entry = Track(hwnd, key);
+            if (entry == null)
+                return;
+
+            Placement? target = entry.AssignedTarget;
+            if (target == null && saved.TryGetValue(key, out var p))
             {
-                int duplicateIndex = MatchingWindowCount(hwnd, key);
-                Placement target = duplicateIndex == 0
-                    ? p
-                    : PlacementGeometry.Cascade(p, duplicateIndex, settings.CascadeOffset);
-                Apply(hwnd, EnsureVisible(target));
+                target = entry.CascadeSlot == 0
+                    ? EnsureVisible(p)
+                    : EnsureVisible(PlacementGeometry.Cascade(
+                        p, entry.CascadeSlot, settings.CascadeOffset));
             }
-            else if (topLeft)
+            else if (target == null && topLeft)
             {
-                Placement? occupied = FirstMatchingPlacement(hwnd, key);
-                if (occupied == null)
+                Placement? primary = PrimaryMatchingPlacement(hwnd, key);
+                if (entry.CascadeSlot == 0 || primary == null)
+                {
                     Center(hwnd);
+                    target = CurrentPlacement(hwnd);
+                }
                 else
-                    Apply(hwnd, EnsureVisible(PlacementGeometry.Cascade(
-                        occupied, Math.Max(1, MatchingWindowCount(hwnd, key)), settings.CascadeOffset)));
+                {
+                    target = EnsureVisible(PlacementGeometry.Cascade(
+                        primary, entry.CascadeSlot, settings.CascadeOffset));
+                }
+            }
+            if (target != null)
+            {
+                entry.AssignedTarget = target;
+                Apply(hwnd, target);
             }
             Track(hwnd, key);
         }
@@ -619,11 +646,9 @@ internal sealed class KeeperContext : ApplicationContext
         }
     }
 
-    private int MatchingWindowCount(IntPtr hwnd, string key) => tracked.Count(pair =>
-        pair.Key != hwnd && pair.Value.Key == key && Win32.IsWindow(pair.Key));
-
-    private Placement? FirstMatchingPlacement(IntPtr hwnd, string key) => tracked
+    private Placement? PrimaryMatchingPlacement(IntPtr hwnd, string key) => tracked
         .Where(pair => pair.Key != hwnd && pair.Value.Key == key && Win32.IsWindow(pair.Key))
+        .OrderBy(pair => pair.Value.CascadeSlot)
         .Select(pair => pair.Value.Last)
         .FirstOrDefault();
 
@@ -651,39 +676,62 @@ internal sealed class KeeperContext : ApplicationContext
         }
     }
 
-    private void Track(IntPtr hwnd, string key)
+    private TrackedWindow? Track(IntPtr hwnd, string key)
     {
         var p = CurrentPlacement(hwnd);
         if (p == null)
-            return;
+            return null;
         if (tracked.TryGetValue(hwnd, out var entry))
         {
-            entry.Key = key; // the title may have settled since the first pass
-            entry.Last = p;
-        }
-        else
-        {
-            tracked[hwnd] = new TrackedWindow
+            if (!string.Equals(entry.Key, key, StringComparison.Ordinal))
             {
-                Key = key,
-                Last = p,
-                OpenedAt = Environment.TickCount64,
-            };
+                bool canKeepSlot = WindowTrackingPolicy.SameWindowFamily(entry.Key, key)
+                    && !IsSlotOccupied(hwnd, key, entry.CascadeSlot);
+                entry.Key = key; // the title may have settled since the first pass
+                if (!canKeepSlot)
+                    entry.CascadeSlot = NextCascadeSlot(hwnd, key);
+                entry.AssignedTarget = null;
+            }
+            entry.Last = p;
+            return entry;
         }
+
+        entry = new TrackedWindow
+        {
+            Key = key,
+            Last = p,
+            CascadeSlot = NextCascadeSlot(hwnd, key),
+            OpenedAt = Environment.TickCount64,
+        };
+        tracked[hwnd] = entry;
+        return entry;
     }
+
+    private int NextCascadeSlot(IntPtr hwnd, string key) =>
+        WindowTrackingPolicy.NextAvailableSlot(tracked
+            .Where(pair => pair.Key != hwnd
+                && pair.Value.Key == key
+                && Win32.IsWindow(pair.Key))
+            .Select(pair => pair.Value.CascadeSlot));
+
+    private bool IsSlotOccupied(IntPtr hwnd, string key, int slot) => tracked.Any(pair =>
+        pair.Key != hwnd
+        && pair.Value.Key == key
+        && pair.Value.CascadeSlot == slot
+        && Win32.IsWindow(pair.Key));
 
     // Windows worth remembering: anything that already has an entry, was
     // moved or resized by the user, or stayed open beyond the splash-screen
     // lifetime.
     private bool ShouldRemember(TrackedWindow entry) =>
-        saved.ContainsKey(entry.Key)
-        || entry.UserMoved
-        || Environment.TickCount64 - entry.OpenedAt >= settings.MinLifetimeMs;
+        entry.CascadeSlot == 0
+        && (saved.ContainsKey(entry.Key)
+            || entry.UserMoved
+            || Environment.TickCount64 - entry.OpenedAt >= settings.MinLifetimeMs);
 
     private void Remember(TrackedWindow entry)
     {
-        entry.Last.LastUsed = DateTimeOffset.UtcNow;
-        saved[entry.Key] = entry.Last;
+        _ = WindowTrackingPolicy.TryRemember(saved, entry, DateTimeOffset.UtcNow);
     }
 
     private static bool Differs(Placement a, Placement b) =>
