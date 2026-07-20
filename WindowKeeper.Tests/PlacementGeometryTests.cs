@@ -73,4 +73,23 @@ public sealed class PlacementGeometryTests
         Assert.Equal((164, 264), (result.X, result.Y));
         Assert.False(result.Maximized);
     }
+
+    [Fact]
+    public void RepeatedCenterChecksMoveAWindowOnlyOnce()
+    {
+        var window = new Rectangle(100, 40, 800, 600);
+        int moves = 0;
+
+        for (int pass = 0; pass < 10; pass++)
+        {
+            Point target = PlacementGeometry.CenterLocation(window, WorkArea);
+            if (!PlacementGeometry.NeedsMove(window, target))
+                continue;
+            window.Location = target;
+            moves++;
+        }
+
+        Assert.Equal(1, moves);
+        Assert.Equal(new Point(650, 260), window.Location);
+    }
 }

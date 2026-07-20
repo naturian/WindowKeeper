@@ -323,6 +323,7 @@ internal sealed class KeeperContext : ApplicationContext
     private Dictionary<string, Placement> saved = null!; // active profile
     private string activeProfile = "";
     private readonly Dictionary<IntPtr, TrackedWindow> tracked = new();
+    private readonly HashSet<IntPtr> immediateCorrections = [];
     private bool enabled;
 
     public KeeperContext()
@@ -462,12 +463,19 @@ internal sealed class KeeperContext : ApplicationContext
 
     private void OnWindowCreated(IntPtr hwnd)
     {
-        if (!enabled)
+        if (!enabled || !immediateCorrections.Add(hwnd))
             return;
-        // immediately: the window has only just become visible — hiding,
-        // positioning and re-showing it makes the open animation play at the
-        // target position instead of the top-left corner
-        CorrectImmediately(hwnd);
+        try
+        {
+            // Immediately: the window has only just become visible. The guard
+            // prevents a hide/show cycle from re-entering this correction for
+            // the same HWND through another shell notification.
+            CorrectImmediately(hwnd);
+        }
+        finally
+        {
+            immediateCorrections.Remove(hwnd);
+        }
         // delayed passes as a safety net (MMC repositions itself late)
         Delay(FirstPassMs, () => CheckWindow(hwnd));
         Delay(SecondPassMs, () => CheckWindow(hwnd));
@@ -500,9 +508,7 @@ internal sealed class KeeperContext : ApplicationContext
                 return;
             if (IsMode(rule, "center"))
             {
-                Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-                Center(hwnd);
-                Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+                Center(hwnd, hideDuringMove: true);
                 return; // always centered, never remembered
             }
             TrackedWindow? entry = Track(hwnd, key);
@@ -556,9 +562,7 @@ internal sealed class KeeperContext : ApplicationContext
                 else
                 {
                     // Unknown first window without its own position management.
-                    Win32.ShowWindow(hwnd, Win32.SW_HIDE);
-                    Center(hwnd);
-                    Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+                    Center(hwnd, hideDuringMove: true);
                     target = CurrentPlacement(hwnd);
                 }
                 entry.AssignedTarget = target;
@@ -786,19 +790,29 @@ internal sealed class KeeperContext : ApplicationContext
         Win32.SetWindowPlacement(hwnd, ref wp);
     }
 
-    private static void Center(IntPtr hwnd)
+    private static bool Center(IntPtr hwnd, bool hideDuringMove = false)
     {
         if (hwnd == IntPtr.Zero || !Win32.IsWindow(hwnd))
-            return;
+            return false;
         if (Win32.IsIconic(hwnd) || Win32.IsZoomed(hwnd))
-            return;
+            return false;
         if (!Win32.GetWindowRect(hwnd, out var r))
-            return;
-        var wa = Screen.FromHandle(hwnd).WorkingArea;
-        int w = r.Right - r.Left, h = r.Bottom - r.Top;
-        Win32.SetWindowPos(hwnd, IntPtr.Zero,
-            wa.Left + (wa.Width - w) / 2, wa.Top + (wa.Height - h) / 2, 0, 0,
+            return false;
+
+        var window = Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+        Point target = PlacementGeometry.CenterLocation(
+            window, Screen.FromHandle(hwnd).WorkingArea);
+        if (!PlacementGeometry.NeedsMove(window, target))
+            return false;
+
+        if (hideDuringMove)
+            Win32.ShowWindow(hwnd, Win32.SW_HIDE);
+        bool moved = Win32.SetWindowPos(hwnd, IntPtr.Zero,
+            target.X, target.Y, 0, 0,
             Win32.SWP_NOSIZE | Win32.SWP_NOZORDER | Win32.SWP_NOACTIVATE);
+        if (hideDuringMove)
+            Win32.ShowWindow(hwnd, Win32.SW_SHOWNA);
+        return moved;
     }
 
     // ---- Helpers ------------------------------------------------------------

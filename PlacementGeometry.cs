@@ -62,6 +62,13 @@ internal static class PlacementGeometry
         return result;
     }
 
+    public static Point CenterLocation(Rectangle window, Rectangle workArea) => new(
+        workArea.Left + (workArea.Width - window.Width) / 2,
+        workArea.Top + (workArea.Height - window.Height) / 2);
+
+    public static bool NeedsMove(Rectangle window, Point target) =>
+        window.Left != target.X || window.Top != target.Y;
+
     private static int ClampCoordinate(long value) =>
         (int)Math.Clamp(value, -32_767L, 32_767L);
 

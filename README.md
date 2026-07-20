@@ -115,6 +115,8 @@ edits are read the next time WindowKeeper starts:
   `.exe`, matched case-insensitively):
   - `"Mode": "ignore"` — never touch and never remember this process.
   - `"Mode": "center"` — always center its windows, never remember them.
+    Centering is idempotent: delayed safety passes do nothing once the window
+    has reached its target and therefore cannot create a hide/show loop.
   - `"IgnoreTitle": true` — build the position key without the window title;
     useful for apps whose titles change with the open document (browsers,
     editors), so all their windows share one remembered position.
@@ -168,13 +170,13 @@ plaintext. No data is transmitted anywhere.
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained `
   -p:PublishSingleFile=true -o publish-sc
-.\tools\build-installer.ps1 -Version 2.4.1 `
+.\tools\build-installer.ps1 -Version 2.4.2 `
   -SourceDir .\publish-sc -OutputDir .\installer-output
 ```
 
 The installer build helper downloads the pinned Inno Setup 7.0.2 compiler,
 verifies its SHA-256 hash and Authenticode publisher, and then creates
-`WindowKeeper-Setup-2.4.1.exe`.
+`WindowKeeper-Setup-2.4.2.exe`.
 
 `--install` prompts for elevation once, copies the published files to
 `%ProgramFiles%\WindowKeeper`, and registers the **WindowKeeper** scheduled
